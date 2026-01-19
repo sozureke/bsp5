@@ -1,0 +1,750 @@
+"""Deterministic step engine for the game simulation."""
+
+from __future__ import annotations
+
+from typing import Optional
+import random
+import networkx as nx
+
+from aegis.core.world import (
+    WorldState,
+    AgentState,
+    TaskState,
+    DoorState,
+    BodyState,
+    MeetingState,
+    Phase,
+    Role,
+    TaskType,
+)
+from aegis.core.rules import GameConfig, create_default_map
+from aegis.core.events import (
+    Event,
+    EventType,
+    kill_event,
+    report_event,
+    meeting_start_event,
+    meeting_end_event,
+    vote_cast_event,
+    ejection_event,
+    door_close_event,
+    door_open_event,
+    task_progress_event,
+    task_step_complete_event,
+    task_complete_event,
+    message_sent_event,
+    move_event,
+    phase_change_event,
+    evac_activated_event,
+    evac_progress_event,
+    win_event,
+    knower_reveal_event,
+)
+
+
+class ActionType:
+    """Action type constants."""
+    NOOP = 0
+    MOVE_BASE = 1  # MOVE_BASE + room_id
+    WORK = -1  # Set dynamically
+    REPORT = -2
+    KILL_BASE = -3  # KILL_BASE - target_id
+    CLOSE_DOOR_BASE = -100  # CLOSE_DOOR_BASE - door_idx
+    SEND_TOKEN_BASE = -200  # SEND_TOKEN_BASE - token_id
+    VOTE_BASE = -300  # VOTE_BASE - target_id
+    VOTE_SKIP = -400
+
+
+class StepEngine:
+    """Deterministic step engine for the game simulation."""
+    
+    def __init__(self, config: Optional[GameConfig] = None):
+        self.config = config or GameConfig()
+        self._rng = random.Random(self.config.seed)
+        self._build_map()
+        self._compute_action_offsets()
+    
+    def _build_map(self) -> None:
+        """Build the map graph."""
+        rooms, edges = create_default_map()
+        self.rooms = rooms
+        self.edges = [tuple(sorted(e)) for e in edges]
+        
+        self.graph = nx.Graph()
+        self.graph.add_nodes_from(rooms)
+        self.graph.add_edges_from(self.edges)
+        
+        # Create edge index mapping
+        self.edge_to_idx = {e: i for i, e in enumerate(self.edges)}
+        self.idx_to_edge = {i: e for e, i in self.edge_to_idx.items()}
+    
+    def _compute_action_offsets(self) -> None:
+        """Compute action space offsets."""
+        n_rooms = len(self.rooms)
+        n_agents = self.config.num_agents
+        n_doors = len(self.edges)
+        n_tokens = 20  # Token vocab size
+        
+        # Action layout: [MOVE_0, ..., MOVE_R-1, WORK, REPORT, KILL_0, ..., KILL_N-1, 
+        #                 CLOSE_0, ..., CLOSE_D-1, TOKEN_0, ..., TOKEN_T-1, VOTE_0, ..., VOTE_N-1, VOTE_SKIP]
+        self.offset_move = 0
+        self.offset_work = n_rooms
+        self.offset_report = n_rooms + 1
+        self.offset_kill = n_rooms + 2
+        self.offset_close = n_rooms + 2 + n_agents
+        self.offset_token = n_rooms + 2 + n_agents + n_doors
+        self.offset_vote = n_rooms + 2 + n_agents + n_doors + n_tokens
+        self.offset_vote_skip = n_rooms + 2 + n_agents + n_doors + n_tokens + n_agents
+        self.action_space_size = self.offset_vote_skip + 1
+    
+    def parse_action(self, action: int) -> tuple[str, int]:
+        """Parse action integer into (action_type, param)."""
+        if action < self.offset_work:
+            return ("move", action - self.offset_move)
+        elif action == self.offset_work:
+            return ("work", 0)
+        elif action == self.offset_report:
+            return ("report", 0)
+        elif action < self.offset_close:
+            return ("kill", action - self.offset_kill)
+        elif action < self.offset_token:
+            return ("close_door", action - self.offset_close)
+        elif action < self.offset_vote:
+            return ("send_token", action - self.offset_token)
+        elif action < self.offset_vote_skip:
+            return ("vote", action - self.offset_vote)
+        elif action == self.offset_vote_skip:
+            return ("vote_skip", 0)
+        else:
+            return ("noop", 0)
+    
+    def action_to_int(self, action_type: str, param: int = 0) -> int:
+        """Convert action type and param to action integer."""
+        if action_type == "move":
+            return self.offset_move + param
+        elif action_type == "work":
+            return self.offset_work
+        elif action_type == "report":
+            return self.offset_report
+        elif action_type == "kill":
+            return self.offset_kill + param
+        elif action_type == "close_door":
+            return self.offset_close + param
+        elif action_type == "send_token":
+            return self.offset_token + param
+        elif action_type == "vote":
+            return self.offset_vote + param
+        elif action_type == "vote_skip":
+            return self.offset_vote_skip
+        else:
+            return 0
+    
+    def create_initial_state(self, seed: Optional[int] = None) -> tuple[WorldState, list[Event]]:
+        """Create initial world state."""
+        if seed is not None:
+            self._rng = random.Random(seed)
+        
+        events = []
+        
+        # Assign roles
+        agent_ids = list(range(self.config.num_agents))
+        self._rng.shuffle(agent_ids)
+        impostor_ids = set(agent_ids[:self.config.num_impostors])
+        
+        # Create agents
+        agents = {}
+        for i in range(self.config.num_agents):
+            role = Role.IMPOSTOR if i in impostor_ids else Role.SURVIVOR
+            room = self._rng.choice(self.rooms)
+            
+            agent = AgentState(
+                agent_id=i,
+                role=role,
+                room=room,
+                kill_cooldown=self.config.kill_cooldown if role == Role.IMPOSTOR else 0,
+            )
+            
+            # Assign tasks to survivors
+            if role == Role.SURVIVOR:
+                agent.tasks = self._generate_tasks()
+            
+            agents[i] = agent
+        
+        # Knower modifier
+        if self.config.enable_knower:
+            knower_id = self._rng.choice(agent_ids)
+            other_ids = [i for i in agent_ids if i != knower_id]
+            target_id = self._rng.choice(other_ids)
+            agents[knower_id].knows_role_of = target_id
+            agents[knower_id].memory_events.append({
+                "type": "knower_reveal",
+                "target_id": target_id,
+                "target_role": agents[target_id].role,
+            })
+            events.append(knower_reveal_event(0, knower_id, target_id, agents[target_id].role))
+        
+        # Create doors (all open initially)
+        doors = {}
+        for edge in self.edges:
+            doors[edge] = DoorState(edge=edge)
+        
+        world = WorldState(
+            tick=0,
+            phase=Phase.FREE_PLAY,
+            agents=agents,
+            bodies=[],
+            doors=doors,
+            rooms=self.rooms,
+            edges=self.edges,
+            evac_room=self.config.evac_room,
+            config=self.config,
+        )
+        
+        return world, events
+    
+    def _generate_tasks(self) -> list[TaskState]:
+        """Generate random tasks for a survivor."""
+        tasks = []
+        available_rooms = [r for r in self.rooms if r != self.config.evac_room]
+        
+        for _ in range(self.config.tasks_per_survivor):
+            if self._rng.random() < self.config.two_step_task_probability:
+                # Two-step task
+                rooms = self._rng.sample(available_rooms, 2)
+                ticks = [self.config.task_ticks_two_step, self.config.task_ticks_two_step]
+                task = TaskState(
+                    task_type=TaskType.TWO_STEP,
+                    rooms=rooms,
+                    ticks_required=ticks,
+                )
+            else:
+                # Single-point task
+                room = self._rng.choice(available_rooms)
+                task = TaskState(
+                    task_type=TaskType.SINGLE_POINT,
+                    rooms=[room],
+                    ticks_required=[self.config.task_ticks_single],
+                )
+            tasks.append(task)
+        
+        return tasks
+    
+    def compute_shortest_path(self, world: WorldState, from_room: int, to_room: int) -> list[int]:
+        """Compute shortest path avoiding closed doors."""
+        if from_room == to_room:
+            return []
+        
+        # Build graph with open edges only
+        open_graph = nx.Graph()
+        open_graph.add_nodes_from(self.rooms)
+        for edge, door in world.doors.items():
+            if door.is_open:
+                open_graph.add_edge(*edge)
+        
+        try:
+            path = nx.shortest_path(open_graph, from_room, to_room)
+            return path[1:]  # Exclude current room
+        except nx.NetworkXNoPath:
+            return []
+    
+    def get_graph_distance(self, world: WorldState, room_a: int, room_b: int) -> int:
+        """Get graph distance between two rooms (ignoring closed doors for vision)."""
+        if room_a == room_b:
+            return 0
+        try:
+            return nx.shortest_path_length(self.graph, room_a, room_b)
+        except nx.NetworkXNoPath:
+            return float('inf')
+    
+    def get_visible_agents(self, world: WorldState, agent_id: int) -> set[int]:
+        """Get agents visible to the given agent."""
+        agent = world.agents[agent_id]
+        if not agent.alive:
+            return set()
+        
+        visible = set()
+        for other_id, other in world.agents.items():
+            if other_id == agent_id:
+                continue
+            dist = self.get_graph_distance(world, agent.room, other.room)
+            if dist <= self.config.vision_radius:
+                visible.add(other_id)
+        
+        return visible
+    
+    def get_visible_bodies(self, world: WorldState, agent_id: int) -> list[BodyState]:
+        """Get bodies visible to the given agent."""
+        agent = world.agents[agent_id]
+        if not agent.alive:
+            return []
+        
+        visible = []
+        for body in world.bodies:
+            dist = self.get_graph_distance(world, agent.room, body.room)
+            if dist <= self.config.vision_radius:
+                visible.append(body)
+        
+        return visible
+    
+    def step(self, world: WorldState, joint_actions: dict[int, int]) -> tuple[WorldState, list[Event]]:
+        """
+        Execute one simulation tick.
+        
+        Order:
+        1) Decrement cooldowns and door timers
+        2) Apply movement
+        3) Apply kills
+        4) Apply reports -> enter MEETING
+        5) Apply WORK for tasks
+        6) Handle phase timers for MEETING/VOTING
+        7) On VOTING end: compute ejection
+        8) Compute win/termination conditions
+        """
+        next_world = world.copy()
+        next_world.tick += 1
+        events = []
+        
+        # 1) Decrement cooldowns and door timers
+        events.extend(self._decrement_timers(next_world))
+        
+        if next_world.phase == Phase.FREE_PLAY:
+            # 2) Apply movement
+            events.extend(self._apply_movement(next_world, joint_actions))
+            
+            # 3) Apply kills
+            events.extend(self._apply_kills(next_world, joint_actions))
+            
+            # 4) Apply reports
+            report_triggered = self._apply_reports(next_world, joint_actions, events)
+            
+            if not report_triggered:
+                # 5) Apply WORK for tasks
+                events.extend(self._apply_work(next_world, joint_actions))
+                
+                # Apply door closes
+                events.extend(self._apply_door_closes(next_world, joint_actions))
+        
+        elif next_world.phase == Phase.MEETING:
+            # Handle meeting messages
+            events.extend(self._apply_messages(next_world, joint_actions))
+            
+            # 6) Handle meeting timer
+            if next_world.meeting:
+                next_world.meeting.phase_timer += 1
+                if next_world.meeting.phase_timer >= self.config.meeting_discussion_ticks:
+                    # Transition to VOTING
+                    events.append(phase_change_event(next_world.tick, Phase.MEETING, Phase.VOTING))
+                    next_world.phase = Phase.VOTING
+                    next_world.meeting.phase_timer = 0
+                    # Reset vote state for all alive agents
+                    for agent in next_world.alive_agents():
+                        agent.has_voted = False
+                        agent.vote_target = None
+        
+        elif next_world.phase == Phase.VOTING:
+            # Handle votes
+            events.extend(self._apply_votes(next_world, joint_actions))
+            
+            # 7) Handle voting timer
+            if next_world.meeting:
+                next_world.meeting.phase_timer += 1
+                if next_world.meeting.phase_timer >= self.config.meeting_voting_ticks:
+                    # End voting, compute ejection
+                    events.extend(self._resolve_voting(next_world))
+        
+        # Check evac activation
+        events.extend(self._check_evac_activation(next_world))
+        
+        # 8) Compute win/termination conditions
+        events.extend(self._check_win_conditions(next_world))
+        
+        return next_world, events
+    
+    def _decrement_timers(self, world: WorldState) -> list[Event]:
+        """Decrement cooldowns and door timers."""
+        events = []
+        
+        for agent in world.agents.values():
+            if agent.kill_cooldown > 0:
+                agent.kill_cooldown -= 1
+            if agent.door_cooldown > 0:
+                agent.door_cooldown -= 1
+        
+        for edge, door in world.doors.items():
+            if door.closed_timer > 0:
+                door.closed_timer -= 1
+                if door.closed_timer == 0:
+                    events.append(door_open_event(world.tick, edge))
+        
+        return events
+    
+    def _apply_movement(self, world: WorldState, joint_actions: dict[int, int]) -> list[Event]:
+        """Apply movement actions."""
+        events = []
+        
+        for agent_id, action in joint_actions.items():
+            agent = world.agents[agent_id]
+            if not agent.alive:
+                continue
+            
+            action_type, param = self.parse_action(action)
+            if action_type == "move":
+                target_room = param
+                if target_room == agent.room:
+                    continue
+                
+                if target_room < 0 or target_room >= len(self.rooms):
+                    continue
+                
+                # Compute path if target changed
+                if agent.target_room != target_room:
+                    agent.target_room = target_room
+                    agent.path = self.compute_shortest_path(world, agent.room, target_room)
+                
+                # Move one step along path
+                if agent.path:
+                    next_room = agent.path[0]
+                    # Check if edge is open
+                    edge = tuple(sorted((agent.room, next_room)))
+                    if world.doors[edge].is_open:
+                        old_room = agent.room
+                        agent.room = next_room
+                        agent.path = agent.path[1:]
+                        events.append(move_event(world.tick, agent_id, old_room, next_room))
+        
+        return events
+    
+    def _apply_kills(self, world: WorldState, joint_actions: dict[int, int]) -> list[Event]:
+        """Apply kill actions."""
+        events = []
+        
+        for agent_id, action in joint_actions.items():
+            agent = world.agents[agent_id]
+            if not agent.alive or agent.role != Role.IMPOSTOR:
+                continue
+            if agent.kill_cooldown > 0:
+                continue
+            
+            action_type, param = self.parse_action(action)
+            if action_type == "kill":
+                target_id = param
+                if target_id == agent_id:
+                    continue
+                
+                target = world.agents.get(target_id)
+                if target is None or not target.alive:
+                    continue
+                
+                # Must be in same room
+                if target.room != agent.room:
+                    continue
+                
+                # Execute kill
+                target.alive = False
+                agent.kill_cooldown = self.config.kill_cooldown
+                
+                # Create body
+                body = BodyState(
+                    agent_id=target_id,
+                    room=target.room,
+                    tick_killed=world.tick,
+                )
+                world.bodies.append(body)
+                
+                events.append(kill_event(world.tick, agent_id, target_id, target.room))
+        
+        return events
+    
+    def _apply_reports(self, world: WorldState, joint_actions: dict[int, int], events: list[Event]) -> bool:
+        """Apply report actions. Returns True if a meeting was triggered."""
+        for agent_id, action in joint_actions.items():
+            agent = world.agents[agent_id]
+            if not agent.alive:
+                continue
+            
+            action_type, _ = self.parse_action(action)
+            if action_type == "report":
+                # Check if there's a body in the agent's room
+                body_in_room = None
+                for body in world.bodies:
+                    if body.room == agent.room:
+                        body_in_room = body
+                        break
+                
+                if body_in_room is not None:
+                    # Start meeting
+                    events.append(report_event(world.tick, agent_id, body_in_room.agent_id, agent.room))
+                    events.append(meeting_start_event(world.tick, agent_id, body_in_room.agent_id, agent.room))
+                    events.append(phase_change_event(world.tick, Phase.FREE_PLAY, Phase.MEETING))
+                    
+                    world.phase = Phase.MEETING
+                    world.meeting = MeetingState(
+                        reporter_id=agent_id,
+                        body_location=agent.room,
+                        body_agent_id=body_in_room.agent_id,
+                    )
+                    
+                    # Remove the reported body
+                    world.bodies.remove(body_in_room)
+                    
+                    return True
+        
+        return False
+    
+    def _apply_work(self, world: WorldState, joint_actions: dict[int, int]) -> list[Event]:
+        """Apply work actions for tasks."""
+        events = []
+        
+        for agent_id, action in joint_actions.items():
+            agent = world.agents[agent_id]
+            if not agent.alive or agent.role != Role.SURVIVOR:
+                continue
+            
+            action_type, _ = self.parse_action(action)
+            if action_type == "work":
+                # Find current incomplete task
+                for task_idx, task in enumerate(agent.tasks):
+                    if task.completed:
+                        continue
+                    
+                    current_room = task.current_room()
+                    if current_room is not None and agent.room == current_room:
+                        # Progress the task
+                        task.progress += 1
+                        events.append(task_progress_event(
+                            world.tick, agent_id, task_idx, task.current_step, task.progress
+                        ))
+                        
+                        # Check if step completed
+                        if task.progress >= task.ticks_required[task.current_step]:
+                            events.append(task_step_complete_event(
+                                world.tick, agent_id, task_idx, task.current_step
+                            ))
+                            
+                            # Move to next step or complete task
+                            task.current_step += 1
+                            task.progress = 0
+                            
+                            if task.current_step >= task.total_steps():
+                                task.completed = True
+                                events.append(task_complete_event(world.tick, agent_id, task_idx))
+                    
+                    break  # Only work on one task at a time
+        
+        return events
+    
+    def _apply_door_closes(self, world: WorldState, joint_actions: dict[int, int]) -> list[Event]:
+        """Apply door close actions."""
+        events = []
+        
+        for agent_id, action in joint_actions.items():
+            agent = world.agents[agent_id]
+            if not agent.alive or agent.role != Role.IMPOSTOR:
+                continue
+            if agent.door_cooldown > 0:
+                continue
+            
+            action_type, param = self.parse_action(action)
+            if action_type == "close_door":
+                door_idx = param
+                if door_idx < 0 or door_idx >= len(self.edges):
+                    continue
+                
+                edge = self.edges[door_idx]
+                door = world.doors[edge]
+                
+                # Check if protecting evac door
+                if self.config.protect_evac_door:
+                    if world.evac_room in edge:
+                        continue
+                
+                if door.is_open:
+                    door.closed_timer = self.config.door_close_duration
+                    agent.door_cooldown = self.config.door_cooldown
+                    events.append(door_close_event(world.tick, agent_id, edge))
+        
+        return events
+    
+    def _apply_messages(self, world: WorldState, joint_actions: dict[int, int]) -> list[Event]:
+        """Apply message sending during meeting."""
+        events = []
+        
+        if world.meeting is None:
+            return events
+        
+        for agent_id, action in joint_actions.items():
+            agent = world.agents[agent_id]
+            if not agent.alive:
+                continue
+            
+            action_type, param = self.parse_action(action)
+            if action_type == "send_token":
+                token_id = param
+                world.meeting.messages.append((world.tick, agent_id, token_id))
+                events.append(message_sent_event(world.tick, agent_id, token_id))
+        
+        return events
+    
+    def _apply_votes(self, world: WorldState, joint_actions: dict[int, int]) -> list[Event]:
+        """Apply voting actions."""
+        events = []
+        
+        if world.meeting is None:
+            return events
+        
+        for agent_id, action in joint_actions.items():
+            agent = world.agents[agent_id]
+            if not agent.alive or agent.has_voted:
+                continue
+            
+            action_type, param = self.parse_action(action)
+            if action_type == "vote":
+                target_id = param
+                if target_id < 0 or target_id >= self.config.num_agents:
+                    continue
+                target = world.agents.get(target_id)
+                if target is None or not target.alive:
+                    continue
+                
+                agent.has_voted = True
+                agent.vote_target = target_id
+                world.meeting.votes[agent_id] = target_id
+                events.append(vote_cast_event(world.tick, agent_id, target_id))
+                
+            elif action_type == "vote_skip":
+                agent.has_voted = True
+                agent.vote_target = None
+                world.meeting.votes[agent_id] = None
+                events.append(vote_cast_event(world.tick, agent_id, None))
+        
+        return events
+    
+    def _resolve_voting(self, world: WorldState) -> list[Event]:
+        """Resolve voting and potentially eject someone."""
+        events = []
+        
+        if world.meeting is None:
+            return events
+        
+        # Count votes
+        vote_counts: dict[Optional[int], int] = {}
+        for voter_id, target_id in world.meeting.votes.items():
+            vote_counts[target_id] = vote_counts.get(target_id, 0) + 1
+        
+        # Also count agents who didn't vote as skips
+        for agent in world.alive_agents():
+            if agent.agent_id not in world.meeting.votes:
+                vote_counts[None] = vote_counts.get(None, 0) + 1
+        
+        # Find maximum votes
+        max_votes = max(vote_counts.values()) if vote_counts else 0
+        max_targets = [t for t, v in vote_counts.items() if v == max_votes]
+        
+        ejected_id = None
+        
+        # Check for tie or skip winning
+        if len(max_targets) == 1 and max_targets[0] is not None:
+            ejected_id = max_targets[0]
+            ejected = world.agents[ejected_id]
+            ejected.alive = False
+            # No body created for ejection
+            events.append(ejection_event(
+                world.tick, ejected_id, ejected.role,
+                {k: v for k, v in world.meeting.votes.items()}
+            ))
+        
+        # End meeting
+        events.append(meeting_end_event(world.tick))
+        events.append(phase_change_event(world.tick, Phase.VOTING, Phase.FREE_PLAY))
+        
+        world.phase = Phase.FREE_PLAY
+        world.meeting = None
+        
+        # Reset vote state
+        for agent in world.agents.values():
+            agent.has_voted = False
+            agent.vote_target = None
+        
+        return events
+    
+    def _check_evac_activation(self, world: WorldState) -> list[Event]:
+        """Check if EVAC should be activated."""
+        events = []
+        
+        if world.evac_active:
+            return events
+        
+        # Condition A: All tasks complete
+        if world.all_tasks_complete():
+            world.evac_active = True
+            events.append(evac_activated_event(world.tick, "all_tasks_complete"))
+            return events
+        
+        # Condition B: All impostors eliminated
+        if len(world.alive_impostors()) == 0:
+            world.evac_active = True
+            events.append(evac_activated_event(world.tick, "all_impostors_eliminated"))
+            return events
+        
+        return events
+    
+    def _check_win_conditions(self, world: WorldState) -> list[Event]:
+        """Check win/termination conditions."""
+        events = []
+        
+        if world.terminated:
+            return events
+        
+        alive_survivors = world.alive_survivors()
+        alive_impostors = world.alive_impostors()
+        
+        # Impostor win: alive impostors >= alive survivors
+        if len(alive_impostors) >= len(alive_survivors) and len(alive_survivors) > 0:
+            world.terminated = True
+            world.winner = Role.IMPOSTOR
+            events.append(win_event(world.tick, Role.IMPOSTOR, "impostor_parity"))
+            return events
+        
+        # All survivors dead
+        if len(alive_survivors) == 0:
+            world.terminated = True
+            world.winner = Role.IMPOSTOR
+            events.append(win_event(world.tick, Role.IMPOSTOR, "all_survivors_dead"))
+            return events
+        
+        # All impostors dead (survivors win)
+        if len(alive_impostors) == 0:
+            world.terminated = True
+            world.winner = Role.SURVIVOR
+            events.append(win_event(world.tick, Role.SURVIVOR, "all_impostors_eliminated"))
+            return events
+        
+        # Survivor win via EVAC
+        if world.evac_active and world.phase == Phase.FREE_PLAY:
+            survivors_in_evac = [a for a in alive_survivors if a.room == world.evac_room]
+            
+            if len(survivors_in_evac) >= 2:
+                world.evac_tick_counter += 1
+                events.append(evac_progress_event(
+                    world.tick, world.evac_tick_counter,
+                    [a.agent_id for a in survivors_in_evac]
+                ))
+                
+                if world.evac_tick_counter >= self.config.evac_ticks_required:
+                    world.terminated = True
+                    world.winner = Role.SURVIVOR
+                    events.append(win_event(world.tick, Role.SURVIVOR, "evac_success"))
+            else:
+                world.evac_tick_counter = 0
+        
+        # Timeout truncation
+        if world.tick >= self.config.max_ticks:
+            world.truncated = True
+            # Impostors win on timeout if not already terminated
+            if not world.terminated:
+                world.terminated = True
+                world.winner = Role.IMPOSTOR
+                events.append(win_event(world.tick, Role.IMPOSTOR, "timeout"))
+        
+        return events
+

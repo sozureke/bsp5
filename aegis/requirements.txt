@@ -1,0 +1,21 @@
+# Core dependencies
+gymnasium>=0.29.0
+pettingzoo>=1.24.0
+supersuit>=3.9.0
+networkx>=3.0
+numpy>=1.24.0
+
+# Training
+ray[rllib]>=2.9.0
+torch>=2.0.0
+
+# Configuration
+pyyaml>=6.0
+
+# Logging (optional)
+wandb>=0.16.0
+
+# Testing
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
