@@ -1,6 +1,6 @@
 env:
-  num_survivors: 2
-  num_impostors: 1
+  num_survivors: 4
+  num_impostors: 2
   num_rooms: 9
   evac_room: 4
   vision_radius: 2

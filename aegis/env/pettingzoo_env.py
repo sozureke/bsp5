@@ -1,5 +1,3 @@
-"""PettingZoo ParallelEnv wrapper around core engine."""
-
 from __future__ import annotations
 
 from typing import Optional, Any
@@ -69,6 +67,17 @@ class AegisEnv(ParallelEnv):
         self.agents: list[str] = []
         self._cumulative_rewards: dict[str, float] = {}
         
+        # Latent suspicion scores (internal only, not exposed to agents)
+        # Maps agent_id (int) -> suspicion score [0.0, 1.0]
+        self.suspicion_score: dict[int, float] = {}
+        
+        # Track ticks since last kill for each impostor (for decay)
+        self.ticks_since_kill: dict[int, int] = {}
+        
+        # Track proximity to other agents (for impostor suspicion)
+        # Maps agent_id -> ticks spent near other agents (consecutive)
+        self.proximity_ticks: dict[int, int] = {}
+        
     def _agent_id_to_name(self, agent_id: int) -> str:
         """Convert numeric agent ID to string name."""
         return f"agent_{agent_id}"
@@ -105,6 +114,15 @@ class AegisEnv(ParallelEnv):
         
         # Reset metrics
         self.metrics = EpisodeMetrics()
+        
+        # Reset suspicion scores (all start at 0.0)
+        self.suspicion_score = {i: 0.0 for i in range(self.config.num_agents)}
+        
+        # Reset kill tracking
+        self.ticks_since_kill = {i: 0 for i in range(self.config.num_agents)}
+        
+        # Reset proximity tracking
+        self.proximity_ticks = {i: 0 for i in range(self.config.num_agents)}
         
         # Log initial events
         if self.event_writer:
@@ -147,11 +165,24 @@ class AegisEnv(ParallelEnv):
                 joint_actions[agent_id] = 0
         
         old_world = self.world
-        next_world, events = self.engine.step(self.world, joint_actions)
+        
+        # Update proximity tracking before step
+        self._update_proximity_tracking(old_world)
+        
+        # Apply temporal decay to suspicion scores
+        self._decay_suspicion(old_world)
+        
+        # Step the engine (voting resolution will use suspicion scores)
+        suspicion_scores = {agent_id: self.suspicion_score[agent_id] 
+                            for agent_id in range(self.config.num_agents)}
+        next_world, events = self.engine.step(self.world, joint_actions, suspicion_scores=suspicion_scores)
         
         if self.event_writer:
             for event in events:
                 self.event_writer.write(event)
+        
+        # Update suspicion scores from events (after step, before rewards)
+        self._update_suspicion_from_events(events, old_world, next_world)
         
         self._update_metrics(events)
         
@@ -408,6 +439,143 @@ class AegisEnv(ParallelEnv):
                     agent.proximity_to_impostor_ticks = 0
         
         return rewards
+    
+    def _update_proximity_tracking(self, world: WorldState) -> None:
+        """Track how long agents stay near other agents (for impostor suspicion)."""
+        for agent_id, agent in world.agents.items():
+            if not agent.alive:
+                self.proximity_ticks[agent_id] = 0
+                continue
+            
+            # Count how many other agents are in the same room
+            other_agents_in_room = 0
+            for other_id, other in world.agents.items():
+                if other_id != agent_id and other.alive and other.room == agent.room:
+                    other_agents_in_room += 1
+            
+            if other_agents_in_room > 0:
+                self.proximity_ticks[agent_id] = self.proximity_ticks.get(agent_id, 0) + 1
+            else:
+                self.proximity_ticks[agent_id] = 0
+    
+    def _decay_suspicion(self, world: WorldState) -> None:
+        """
+        Apply temporal decay to suspicion scores.
+        
+        Requirements:
+        - -0.1 slowly over time if no kills occur (for impostors)
+        """
+        for agent_id, agent in world.agents.items():
+            if not agent.alive:
+                continue
+            
+            # For impostors: decay if no kills recently
+            if agent.role == Role.IMPOSTOR:
+                ticks_since_kill = self.ticks_since_kill.get(agent_id, 0)
+                # Decay by 0.1 every 10 ticks if no kills (slow decay)
+                if ticks_since_kill > 0 and ticks_since_kill % 10 == 0:
+                    self.suspicion_score[agent_id] = max(0.0, self.suspicion_score[agent_id] - 0.1)
+                
+                # Increment ticks since kill
+                self.ticks_since_kill[agent_id] = ticks_since_kill + 1
+            
+            # Ensure scores stay in [0, 1]
+            self.suspicion_score[agent_id] = max(0.0, min(1.0, self.suspicion_score[agent_id]))
+    
+    def _update_suspicion_from_events(
+        self,
+        events: list[Event],
+        old_world: WorldState,
+        new_world: WorldState,
+    ) -> None:
+        """
+        Update suspicion scores based on events.
+        
+        This is internal environment state only - not exposed to agents.
+        
+        Requirements:
+        - Impostor kills: +0.3 if at least one witness is nearby
+        - Impostor near body: +0.2
+        - Impostor stays frequently near other agents: +0.1 (when proximity_ticks >= 5)
+        - Survivor near body: +0.05
+        - Survivor task progress: -0.05
+        """
+        for event in events:
+            if event.event_type == EventType.KILL:
+                killer_id = event.data["killer_id"]
+                victim_id = event.data["victim_id"]
+                kill_room = event.data["room"]
+                
+                # Check if killer is impostor (should always be true, but check anyway)
+                killer = old_world.agents.get(killer_id)
+                if killer and killer.role == Role.IMPOSTOR:
+                    # Check for witnesses in the same room
+                    witnesses = []
+                    for agent_id, agent in old_world.agents.items():
+                        if agent_id == killer_id or agent_id == victim_id:
+                            continue
+                        if not agent.alive:
+                            continue
+                        if agent.room == kill_room:
+                            # Check vision distance
+                            dist = self.engine.get_graph_distance(old_world, agent.room, kill_room)
+                            if dist <= self.config.vision_radius:
+                                witnesses.append(agent_id)
+                    
+                    # +0.3 if at least one witness is nearby
+                    if len(witnesses) > 0:
+                        self.suspicion_score[killer_id] += 0.3
+                    
+                    # Reset kill counter
+                    self.ticks_since_kill[killer_id] = 0
+            
+            elif event.event_type == EventType.REPORT:
+                # When a body is reported, check who was near it
+                reporter_id = event.data["reporter_id"]
+                body_room = event.data["room"]
+                
+                # Find the body that was reported
+                for body in old_world.bodies:
+                    if body.room == body_room:
+                        # Check if body is "fresh" (killed recently, within last 10 ticks)
+                        body_age = old_world.tick - body.tick_killed
+                        if body_age <= 10:
+                            # Agents who were in same room as fresh body get suspicion
+                            for agent_id, agent in old_world.agents.items():
+                                if agent_id == reporter_id:
+                                    continue  # Reporter is doing their job
+                                if not agent.alive:
+                                    continue
+                                if agent.room == body_room:
+                                    if agent.role == Role.IMPOSTOR:
+                                        # Impostor near body: +0.2
+                                        self.suspicion_score[agent_id] += 0.2
+                                    else:
+                                        # Survivor near body: +0.05
+                                        self.suspicion_score[agent_id] += 0.05
+            
+            elif event.event_type == EventType.TASK_STEP_COMPLETE:
+                agent_id = event.data["agent_id"]
+                agent = new_world.agents.get(agent_id)
+                if agent and agent.role == Role.SURVIVOR:
+                    # Survivor task progress: -0.05
+                    self.suspicion_score[agent_id] = max(0.0, self.suspicion_score[agent_id] - 0.05)
+        
+        # Update suspicion for impostors staying near other agents
+        # Check proximity ticks accumulated during this step
+        for agent_id, agent in new_world.agents.items():
+            if not agent.alive:
+                continue
+            if agent.role == Role.IMPOSTOR:
+                # If impostor has been near other agents for 5+ consecutive ticks, add suspicion
+                # Add suspicion every 5 ticks while near other agents (5, 10, 15, etc.)
+                proximity_count = self.proximity_ticks.get(agent_id, 0)
+                if proximity_count >= 5 and proximity_count % 5 == 0:
+                    self.suspicion_score[agent_id] += 0.1
+        
+        # Clamp all suspicion scores to [0, 1]
+        for agent_id in self.suspicion_score:
+            self.suspicion_score[agent_id] = max(0.0, min(1.0, self.suspicion_score[agent_id]))
     
     def _update_metrics(self, events: list[Event]) -> None:
         """Update episode metrics based on events."""

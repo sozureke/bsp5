@@ -286,7 +286,12 @@ class StepEngine:
         
         return visible
     
-    def step(self, world: WorldState, joint_actions: dict[int, int]) -> tuple[WorldState, list[Event]]:
+    def step(
+        self, 
+        world: WorldState, 
+        joint_actions: dict[int, int],
+        suspicion_scores: Optional[dict[int, float]] = None,
+    ) -> tuple[WorldState, list[Event]]:
         """
         Execute one simulation tick.
         
@@ -299,6 +304,12 @@ class StepEngine:
         6) Handle phase timers for MEETING/VOTING
         7) On VOTING end: compute ejection
         8) Compute win/termination conditions
+        
+        Args:
+            world: Current world state
+            joint_actions: Actions for all agents
+            suspicion_scores: Optional dict mapping agent_id -> suspicion score [0.0, 1.0]
+                            Used for probabilistic ejection selection
         """
         next_world = world.copy()
         next_world.tick += 1
@@ -349,8 +360,8 @@ class StepEngine:
             if next_world.meeting:
                 next_world.meeting.phase_timer += 1
                 if next_world.meeting.phase_timer >= self.config.meeting_voting_ticks:
-                    # End voting, compute ejection
-                    events.extend(self._resolve_voting(next_world))
+                    # End voting, compute ejection (with optional suspicion scores)
+                    events.extend(self._resolve_voting(next_world, suspicion_scores=suspicion_scores))
         
         # Check evac activation
         events.extend(self._check_evac_activation(next_world))
@@ -433,6 +444,10 @@ class StepEngine:
                 
                 target = world.agents.get(target_id)
                 if target is None or not target.alive:
+                    continue
+                
+                # Impostors cannot be killed, only ejected
+                if target.role == Role.IMPOSTOR:
                     continue
                 
                 # Must be in same room
@@ -619,14 +634,31 @@ class StepEngine:
         
         return events
     
-    def _resolve_voting(self, world: WorldState) -> list[Event]:
-        """Resolve voting and potentially eject someone."""
+    def _resolve_voting(
+        self, 
+        world: WorldState,
+        suspicion_scores: Optional[dict[int, float]] = None,
+    ) -> list[Event]:
+        """
+        Resolve voting and potentially eject someone.
+        
+        Voting mechanism: Probabilistic selection based on suspicion scores.
+        P(eject agent i) ∝ suspicion[i] with small uniform noise.
+        
+        This is environment-internal causal memory - agents do not have direct
+        access to suspicion scores. Voting is NOT trained by agents.
+        
+        Args:
+            world: Current world state
+            suspicion_scores: Optional dict mapping agent_id -> suspicion score [0.0, 1.0]
+                            If None, voting falls back to deterministic vote counting
+        """
         events = []
         
         if world.meeting is None:
             return events
         
-        # Count votes
+        # Count base votes
         vote_counts: dict[Optional[int], int] = {}
         for voter_id, target_id in world.meeting.votes.items():
             vote_counts[target_id] = vote_counts.get(target_id, 0) + 1
@@ -636,15 +668,44 @@ class StepEngine:
             if agent.agent_id not in world.meeting.votes:
                 vote_counts[None] = vote_counts.get(None, 0) + 1
         
-        # Find maximum votes
-        max_votes = max(vote_counts.values()) if vote_counts else 0
-        max_targets = [t for t, v in vote_counts.items() if v == max_votes]
-        
         ejected_id = None
         
-        # Check for tie or skip winning
-        if len(max_targets) == 1 and max_targets[0] is not None:
-            ejected_id = max_targets[0]
+        if suspicion_scores is not None:
+            alive_agent_ids = [a.agent_id for a in world.alive_agents()]
+            if len(alive_agent_ids) > 0:
+                suspicion_weights = []
+                for agent_id in alive_agent_ids:
+                    suspicion = suspicion_scores.get(agent_id, 0.0)
+                    noise = self._rng.uniform(0.0, 0.1)
+                    weight = suspicion + noise
+                    suspicion_weights.append(weight)
+                
+                total_weight = sum(suspicion_weights)
+                if total_weight > 0:
+                    probabilities = [w / total_weight for w in suspicion_weights]
+                    
+                        # Sample from distribution
+                    selected_idx = self._rng.choices(
+                        range(len(alive_agent_ids)),
+                        weights=probabilities,
+                        k=1
+                    )[0]
+                    ejected_id = alive_agent_ids[selected_idx]
+                else:
+                    # If all suspicions are 0 and noise is low, fall back to vote-based selection
+                    max_votes = max(vote_counts.values()) if vote_counts else 0
+                    max_targets = [t for t, v in vote_counts.items() if v == max_votes]
+                    if len(max_targets) == 1 and max_targets[0] is not None:
+                        ejected_id = max_targets[0]
+        else:
+            # Fallback: deterministic vote counting (when suspicion_scores not provided)
+            max_votes = max(vote_counts.values()) if vote_counts else 0
+            max_targets = [t for t, v in vote_counts.items() if v == max_votes]
+            if len(max_targets) == 1 and max_targets[0] is not None:
+                ejected_id = max_targets[0]
+        
+        # Eject the selected agent
+        if ejected_id is not None:
             ejected = world.agents[ejected_id]
             ejected.alive = False
             # No body created for ejection
