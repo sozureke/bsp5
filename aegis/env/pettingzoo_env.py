@@ -135,38 +135,35 @@ class AegisEnv(ParallelEnv):
         if self.world is None:
             raise RuntimeError("Environment not reset")
         
-        # Convert string agent names to numeric IDs
         joint_actions = {}
         for agent_name, action in actions.items():
             if agent_name in self.agents:
                 agent_id = self._name_to_agent_id(agent_name)
                 joint_actions[agent_id] = action
         
-        # Fill in default actions for agents that didn't provide one
         for agent_name in self.agents:
             agent_id = self._name_to_agent_id(agent_name)
             if agent_id not in joint_actions:
-                # Default to first valid action (usually MOVE_0 / stay)
                 joint_actions[agent_id] = 0
         
-        # Step the simulation
+        old_world = self.world
         next_world, events = self.engine.step(self.world, joint_actions)
         
-        # Log events
         if self.event_writer:
             for event in events:
                 self.event_writer.write(event)
         
-        # Update metrics
         self._update_metrics(events)
         
-        # Compute rewards
-        rewards = self._compute_rewards(self.world, next_world, events, joint_actions)
+        agent_events = self._extract_agent_events(events, next_world)
         
-        # Update world
-        self.world = next_world
+        rewards = self._compute_rewards(old_world, next_world, events, joint_actions)
         
-        # Build observations
+        authoritative_winner = None
+        if next_world.terminated or next_world.truncated:
+            if next_world.winner is not None:
+                authoritative_winner = int(next_world.winner)
+        
         observations = {}
         terminations = {}
         truncations = {}
@@ -174,30 +171,151 @@ class AegisEnv(ParallelEnv):
         
         for agent_name in self.possible_agents:
             agent_id = self._name_to_agent_id(agent_name)
-            agent = self.world.agents[agent_id]
+            agent = next_world.agents[agent_id]
             
-            observations[agent_name] = self.obs_builder.build(self.world, agent_id)
-            terminations[agent_name] = self.world.terminated
-            truncations[agent_name] = self.world.truncated
+            observations[agent_name] = self.obs_builder.build(next_world, agent_id)
+            terminations[agent_name] = next_world.terminated
+            truncations[agent_name] = next_world.truncated
+            
+            agent_event_info = agent_events.get(agent_name, {})
+            
+            # Contract: role and winner are always int (0 or 1) or None for winner
             infos[agent_name] = {
                 "role": int(agent.role),
                 "alive": agent.alive,
-                "winner": self.world.winner if self.world.terminated else None,
+                "winner": authoritative_winner,  # int or None, never Role enum
+                "events": agent_event_info.get("events", []),
+                "did_kill": agent_event_info.get("did_kill", False),
+                "did_task_step": agent_event_info.get("did_task_step", False),
+                "was_killed": agent_event_info.get("was_killed", False),
+                "was_ejected": agent_event_info.get("was_ejected", False),
+                "team_task_step": agent_event_info.get("team_task_step", False),
+                "did_report": agent_event_info.get("did_report", False),
+                "ejection_benefited": agent_event_info.get("ejection_benefited", False),
+                "ejection_penalized": agent_event_info.get("ejection_penalized", False),
             }
+            
+            # A3: Ensure elimination flags are mutually consistent
+            # If agent became dead, exactly one elimination flag must be True
+            was_alive = old_world.agents[agent_id].alive if agent_id in old_world.agents else True
+            if not agent.alive and was_alive:
+                was_killed = agent_event_info.get("was_killed", False)
+                was_ejected = agent_event_info.get("was_ejected", False)
+                
+                if agent.role == Role.IMPOSTOR:
+                    # A4: Impostor invariant - can only be ejected, never killed
+                    if was_killed:
+                        raise RuntimeError(
+                            f"Invariant violated: impostor {agent_id} was killed. "
+                            "Impostors can only be ejected, never killed. Check engine logic."
+                        )
+                    if not was_ejected:
+                        raise RuntimeError(
+                            f"Invariant violated: impostor {agent_id} died but was_ejected=False. "
+                            "Impostors can only leave via ejection."
+                        )
+                else:  # SURVIVOR
+                    # Survivor: must have exactly one of was_killed or was_ejected
+                    if was_killed == was_ejected:
+                        raise RuntimeError(
+                            f"Invariant violated: survivor {agent_id} died but elimination flags inconsistent. "
+                            f"was_killed={was_killed}, was_ejected={was_ejected}. "
+                            "Exactly one must be True."
+                        )
         
-        # Update active agents list (remove dead agents from active list)
+        # Update world state after all checks
+        self.world = next_world
+        
         self.agents = [
             name for name in self.possible_agents
             if self.world.agents[self._name_to_agent_id(name)].alive
         ]
         
-        # If terminated, finalize metrics
         if self.world.terminated or self.world.truncated:
             self.metrics.finalize(self.world)
             if self.event_writer:
                 self.event_writer.flush()
         
         return observations, rewards, terminations, truncations, infos
+    
+    def _extract_agent_events(
+        self,
+        events: list[Event],
+        next_world: WorldState,
+    ) -> dict[str, dict]:
+        """Extract per-agent event tags from step events."""
+        agent_events = {name: {"events": []} for name in self.possible_agents}
+        
+        for event in events:
+            if event.event_type == EventType.KILL:
+                killer_id = event.data["killer_id"]
+                victim_id = event.data["victim_id"]
+                killer_name = self._agent_id_to_name(killer_id)
+                victim_name = self._agent_id_to_name(victim_id)
+                
+                # A4: Invariant check - impostor cannot be killed
+                victim_role = next_world.agents[victim_id].role
+                if victim_role == Role.IMPOSTOR:
+                    raise RuntimeError(
+                        f"Invariant violated: KILL event targets impostor {victim_id}. "
+                        "Impostors can only be ejected, never killed. Check engine logic."
+                    )
+                
+                agent_events[killer_name]["events"].append("kill")
+                agent_events[killer_name]["did_kill"] = True
+                agent_events[victim_name]["events"].append("killed")
+                agent_events[victim_name]["was_killed"] = True
+            
+            elif event.event_type == EventType.TASK_STEP_COMPLETE:
+                agent_id = event.data["agent_id"]
+                agent_name = self._agent_id_to_name(agent_id)
+                agent_events[agent_name]["events"].append("task_step")
+                agent_events[agent_name]["did_task_step"] = True
+                
+                for name in self.possible_agents:
+                    aid = self._name_to_agent_id(name)
+                    if next_world.agents[aid].role == Role.SURVIVOR:
+                        agent_events[name]["team_task_step"] = True
+            
+            elif event.event_type == EventType.REPORT:
+                reporter_id = event.data["reporter_id"]
+                reporter_name = self._agent_id_to_name(reporter_id)
+                agent_events[reporter_name]["events"].append("report")
+                agent_events[reporter_name]["did_report"] = True
+            
+            elif event.event_type == EventType.EJECTION:
+                ejected_id = event.data["ejected_id"]
+                ejected_role = Role(event.data["role"])
+                ejected_name = self._agent_id_to_name(ejected_id)
+                
+                agent_events[ejected_name]["events"].append("ejected")
+                agent_events[ejected_name]["was_ejected"] = True
+                
+                for name in self.possible_agents:
+                    aid = self._name_to_agent_id(name)
+                    agent_role = next_world.agents[aid].role
+                    
+                    if agent_role == Role.SURVIVOR:
+                        if ejected_role == Role.IMPOSTOR:
+                            agent_events[name]["ejection_benefited"] = True
+                        else:
+                            agent_events[name]["ejection_penalized"] = True
+                    else:
+                        if ejected_role == Role.SURVIVOR:
+                            agent_events[name]["ejection_benefited"] = True
+                        else:
+                            agent_events[name]["ejection_penalized"] = True
+            
+            elif event.event_type == EventType.WIN:
+                winner = Role(event.data["winner"])
+                for name in self.possible_agents:
+                    aid = self._name_to_agent_id(name)
+                    if next_world.agents[aid].role == winner:
+                        agent_events[name]["events"].append("win")
+                    else:
+                        agent_events[name]["events"].append("loss")
+        
+        return agent_events
     
     def _compute_rewards(
         self,

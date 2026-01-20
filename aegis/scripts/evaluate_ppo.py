@@ -83,19 +83,21 @@ def evaluate(
         step_count = 0
         
         while not done:
-            # Get observations and masks
             obs_flat = []
             masks = []
+            roles = []
             for name in agent_names:
                 obs_flat.append(flatten_obs(obs_dict[name]))
                 masks.append(obs_dict[name]["action_mask"])
+                roles.append(obs_dict[name]["self_role"])
             
             obs_tensor = torch.tensor(np.array(obs_flat), dtype=torch.float32, device=device)
             mask_tensor = torch.tensor(np.array(masks), dtype=torch.float32, device=device)
+            roles_tensor = torch.tensor(np.array(roles), dtype=torch.long, device=device)
             
             # Get actions (deterministic for evaluation)
             with torch.no_grad():
-                actions, _, _, _ = agent.get_action_and_value(obs_tensor, mask_tensor)
+                actions, _, _, _ = agent.get_action_and_value(obs_tensor, mask_tensor, roles_tensor)
             
             actions_dict = {name: actions[i].item() for i, name in enumerate(agent_names)}
             
