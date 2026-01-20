@@ -10,8 +10,15 @@ from typing import Optional, Dict, Any
 import yaml
 import numpy as np
 
-# NumPy 2.0 compatibility - restore deprecated aliases used by RLlib
-# These aliases were removed in NumPy 2.0 but are still used by RLlib
+try:
+    from tqdm import tqdm
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
+    def tqdm(iterable, *args, **kwargs):
+        return iterable
+
+
 _NP_COMPAT_ALIASES = {
     'float_': np.float64,
     'int_': np.int64,
@@ -319,12 +326,90 @@ def load_config(config_path: str) -> dict:
         return yaml.safe_load(f)
 
 
+def is_gpu_compatible() -> bool:
+    """
+    Check if GPU is available and compatible with PyTorch.
+    
+    Returns:
+        True if GPU is available and can be used, False otherwise.
+    """
+    # Check environment variable to force CPU
+    if os.environ.get("FORCE_CPU", "0").lower() in ("1", "true", "yes"):
+        return False
+    
+    # If CUDA_VISIBLE_DEVICES is explicitly set to empty, force CPU
+    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    if cuda_visible == "" and "CUDA_VISIBLE_DEVICES" in os.environ:
+        return False
+    
+    if not torch.cuda.is_available():
+        return False
+    
+    try:
+        # Try to create a small tensor on GPU to verify compatibility
+        # Use CUDA_LAUNCH_BLOCKING to get immediate errors
+        with torch.cuda.device(0):
+            test_tensor = torch.tensor([1.0], device="cuda:0")
+            # Try a simple operation that requires kernel execution
+            result = torch.relu(test_tensor)
+            # Clean up
+            del test_tensor, result
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+        return True
+    except (RuntimeError, torch.cuda.DeviceError, Exception) as e:
+        # GPU is not compatible or not working
+        error_msg = str(e)
+        if "no kernel image" in error_msg.lower() or "cuda capability" in error_msg.lower():
+            print(f"GPU compute capability not supported by PyTorch: {error_msg}")
+        else:
+            print(f"GPU not compatible or not available: {error_msg}")
+        print("Falling back to CPU training.")
+        return False
+
+
+def select_torch_device(device_pref: str) -> str:
+    """
+    Select torch device based on user preference and availability.
+    
+    Args:
+        device_pref: "auto", "cpu", "cuda", or "mps"
+    
+    Returns:
+        Selected device string: "cpu", "cuda", or "mps"
+    """
+    pref = (device_pref or "auto").lower()
+    if pref not in ("auto", "cpu", "cuda", "mps"):
+        print(f"Unknown device '{device_pref}', falling back to auto.")
+        pref = "auto"
+    
+    if pref == "cpu":
+        return "cpu"
+    
+    if pref == "cuda":
+        return "cuda" if is_gpu_compatible() else "cpu"
+    
+    if pref == "mps":
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps"
+        print("MPS not available, falling back to CPU.")
+        return "cpu"
+    
+    # auto: prefer CUDA, then MPS, else CPU
+    if is_gpu_compatible():
+        return "cuda"
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 def train(
     config_path: Optional[str] = None,
     num_iterations: int = 1000,
     checkpoint_dir: str = "./checkpoints",
     use_wandb: bool = False,
     wandb_project: str = "aegis",
+    device: str = "auto",
 ):
     """
     Train AEGIS agents using PPO.
@@ -346,6 +431,20 @@ def train(
     rewards_config = config.get("rewards", {})
     training_config = config.get("training", {})
     logging_config = config.get("logging", {})
+    
+    # Select torch device based on user preference
+    selected_device = select_torch_device(device)
+    if selected_device == "cpu":
+        if torch.cuda.is_available() and device in ("cuda", "auto"):
+            print("GPU detected but not compatible. Forcing CPU training.")
+    elif selected_device == "mps":
+        # Prefer MPS for new tensors when available
+        try:
+            torch.set_default_device("mps")
+            os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+        except Exception as exc:
+            print(f"Failed to set MPS device ({exc}), falling back to CPU.")
+            selected_device = "cpu"
     
     # Initialize Ray
     ray.init(ignore_reinit_error=True)
@@ -432,7 +531,7 @@ def train(
             evaluation_duration_unit="episodes",
         )
         .resources(
-            num_gpus=1 if torch.cuda.is_available() else 0,
+            num_gpus=1 if selected_device == "cuda" else 0,
         )
     )
     
@@ -455,19 +554,47 @@ def train(
     # Create checkpoint directory
     Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
     
-    # Training loop
+    # Training loop with progress bar
     print(f"Starting training for {num_iterations} iterations...")
     
-    for i in range(num_iterations):
+    # Create progress bar
+    pbar = tqdm(
+        range(num_iterations),
+        desc="Training",
+        unit="iter",
+        disable=not HAS_TQDM,
+        ncols=100,
+    )
+    
+    def _get_metric(result: Dict[str, Any], key: str, default: float = 0.0) -> float:
+        """Fetch metrics from RLlib result across API versions."""
+        if key in result:
+            return result.get(key, default)
+        for container in ("env_runners", "sampler_results", "evaluation"):
+            if container in result and key in result[container]:
+                return result[container].get(key, default)
+        return default
+
+    for i in pbar:
         result = algo.train()
         
         # Log metrics
-        episode_reward_mean = result.get("episode_reward_mean", 0)
-        episode_len_mean = result.get("episode_len_mean", 0)
+        episode_reward_mean = _get_metric(result, "episode_reward_mean", 0.0)
+        episode_len_mean = _get_metric(result, "episode_len_mean", 0.0)
         
-        print(f"Iteration {i + 1}: "
-              f"reward={episode_reward_mean:.3f}, "
-              f"len={episode_len_mean:.1f}")
+        # Update progress bar with current metrics
+        pbar.set_postfix({
+            "reward": f"{episode_reward_mean:.3f}",
+            "len": f"{episode_len_mean:.1f}",
+            "iter": f"{i + 1}/{num_iterations}",
+        })
+        
+        # Also print detailed info (less frequently or when checkpointing)
+        checkpoint_freq = training_config.get("checkpoint_freq", 50)
+        if (i + 1) % checkpoint_freq == 0 or (i + 1) % 10 == 0:
+            print(f"\nIteration {i + 1}/{num_iterations}: "
+                  f"reward={episode_reward_mean:.3f}, "
+                  f"len={episode_len_mean:.1f}")
         
         if use_wandb:
             wandb.log({
@@ -478,10 +605,12 @@ def train(
             })
         
         # Save checkpoint
-        checkpoint_freq = training_config.get("checkpoint_freq", 50)
         if (i + 1) % checkpoint_freq == 0:
             checkpoint_path = algo.save(checkpoint_dir)
             print(f"Saved checkpoint to {checkpoint_path}")
+    
+    # Close progress bar
+    pbar.close()
     
     # Final checkpoint
     final_path = algo.save(checkpoint_dir)
@@ -526,6 +655,13 @@ def main():
         default="aegis",
         help="W&B project name",
     )
+    parser.add_argument(
+        "--device",
+        type=str,
+        choices=["auto", "cpu", "cuda", "mps"],
+        default="auto",
+        help="Torch device selection (auto, cpu, cuda, mps)",
+    )
     
     args = parser.parse_args()
     
@@ -535,6 +671,7 @@ def main():
         checkpoint_dir=args.checkpoint_dir,
         use_wandb=args.wandb,
         wandb_project=args.wandb_project,
+        device=args.device,
     )
 
 
