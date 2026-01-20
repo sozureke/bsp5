@@ -231,48 +231,42 @@ class ActionMaskModel(TorchModelV2, torch.nn.Module):
     
     def forward(self, input_dict, state, seq_lens):
         obs = input_dict["obs"]
+        device = next(self.parameters()).device
         
-        # Handle both Dict and flattened (tensor/array) observations
         if isinstance(obs, dict):
-            # Dict observation - extract and flatten components (excluding action_mask)
             flat_obs = []
-            for key, value in sorted(obs.items()):  # Sort to maintain consistency
+            for key, value in sorted(obs.items()):
                 if key != "action_mask":
                     if isinstance(value, torch.Tensor):
-                        flat_obs.append(value.float().view(value.shape[0], -1))
+                        flat_obs.append(value.float().to(device).view(value.shape[0], -1))
                     else:
-                        tensor = torch.tensor(value, dtype=torch.float32)
+                        tensor = torch.tensor(value, dtype=torch.float32, device=device)
                         flat_obs.append(tensor.view(tensor.shape[0], -1))
             
             x = torch.cat(flat_obs, dim=-1)
             action_mask = obs.get("action_mask")
-            if action_mask is not None and not isinstance(action_mask, torch.Tensor):
-                action_mask = torch.tensor(action_mask, dtype=torch.float32)
+            if action_mask is not None:
+                if isinstance(action_mask, torch.Tensor):
+                    action_mask = action_mask.to(device)
+                else:
+                    action_mask = torch.tensor(action_mask, dtype=torch.float32, device=device)
         else:
-            # Flattened observation - RLlib flattens Dict obs alphabetically
-            # 'action_mask' comes first alphabetically, so it's at the BEGINNING
             if isinstance(obs, torch.Tensor):
-                obs_tensor = obs.float()
+                obs_tensor = obs.float().to(device)
             else:
-                obs_tensor = torch.tensor(obs, dtype=torch.float32)
+                obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device)
             
-            # Action mask is at the beginning (first action_mask_size elements)
             action_mask = obs_tensor[..., :self.action_mask_size]
-            # Features are everything after the action mask
             x = obs_tensor[..., self.action_mask_size:]
         
-        # Forward through feature network
         self._features = self.feature_net(x)
         
-        # Get logits
         logits = self.policy_head(self._features)
         
-        # Apply action mask
         if action_mask is not None:
             if not isinstance(action_mask, torch.Tensor):
-                action_mask = torch.tensor(action_mask, dtype=torch.float32)
+                action_mask = torch.tensor(action_mask, dtype=torch.float32, device=device)
             
-            # Convert mask to large negative values for invalid actions
             inf_mask = torch.clamp(
                 torch.log(action_mask.float() + 1e-10),
                 min=FLOAT_MIN,
@@ -373,13 +367,13 @@ def select_torch_device(device_pref: str) -> str:
     Select torch device based on user preference and availability.
     
     Args:
-        device_pref: "auto", "cpu", "cuda", or "mps"
+        device_pref: "auto", "cpu", or "cuda"
     
     Returns:
-        Selected device string: "cpu", "cuda", or "mps"
+        Selected device string: "cpu" or "cuda"
     """
     pref = (device_pref or "auto").lower()
-    if pref not in ("auto", "cpu", "cuda", "mps"):
+    if pref not in ("auto", "cpu", "cuda"):
         print(f"Unknown device '{device_pref}', falling back to auto.")
         pref = "auto"
     
@@ -389,18 +383,7 @@ def select_torch_device(device_pref: str) -> str:
     if pref == "cuda":
         return "cuda" if is_gpu_compatible() else "cpu"
     
-    if pref == "mps":
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            return "mps"
-        print("MPS not available, falling back to CPU.")
-        return "cpu"
-    
-    # auto: prefer CUDA, then MPS, else CPU
-    if is_gpu_compatible():
-        return "cuda"
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
+    return "cuda" if is_gpu_compatible() else "cpu"
 
 
 def train(
@@ -437,14 +420,7 @@ def train(
     if selected_device == "cpu":
         if torch.cuda.is_available() and device in ("cuda", "auto"):
             print("GPU detected but not compatible. Forcing CPU training.")
-    elif selected_device == "mps":
-        # Prefer MPS for new tensors when available
-        try:
-            torch.set_default_device("mps")
-            os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
-        except Exception as exc:
-            print(f"Failed to set MPS device ({exc}), falling back to CPU.")
-            selected_device = "cpu"
+        torch.set_default_device("cpu")
     
     # Initialize Ray
     ray.init(ignore_reinit_error=True)
@@ -578,16 +554,15 @@ def train(
     for i in pbar:
         result = algo.train()
         
-        # Log metrics
         episode_reward_mean = _get_metric(result, "episode_reward_mean", 0.0)
         episode_len_mean = _get_metric(result, "episode_len_mean", 0.0)
         
-        # Update progress bar with current metrics
-        pbar.set_postfix({
-            "reward": f"{episode_reward_mean:.3f}",
-            "len": f"{episode_len_mean:.1f}",
-            "iter": f"{i + 1}/{num_iterations}",
-        })
+        if HAS_TQDM:
+            pbar.set_postfix({
+                "reward": f"{episode_reward_mean:.3f}",
+                "len": f"{episode_len_mean:.1f}",
+                "iter": f"{i + 1}/{num_iterations}",
+            })
         
         # Also print detailed info (less frequently or when checkpointing)
         checkpoint_freq = training_config.get("checkpoint_freq", 50)
@@ -658,9 +633,9 @@ def main():
     parser.add_argument(
         "--device",
         type=str,
-        choices=["auto", "cpu", "cuda", "mps"],
+        choices=["auto", "cpu", "cuda"],
         default="auto",
-        help="Torch device selection (auto, cpu, cuda, mps)",
+        help="Torch device selection (auto, cpu, cuda)",
     )
     
     args = parser.parse_args()
