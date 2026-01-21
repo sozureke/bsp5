@@ -20,21 +20,9 @@ env:
   max_messages_per_meeting: 10
   comm_mode: broadcast
   memory_mode: none
+  suspicion_delay_ticks: 30
 
-rewards:
-  win: 1.0
-  loss: -1.0
-  task_step: 0.05
-  correct_report: 0.1
-  impostor_ejected_survivor: 0.15
-  survivor_ejected_survivor: -0.15
-  kill: 0.15
-  impostor_ejected_impostor: -0.2
-  survivor_ejected_impostor: 0.1
-  time_penalty: -0.0001
-  proximity_penalty: -0.003
-  proximity_penalty_ticks: 1
-  
+rewards:  
   survivor:
     win: 1.5
     task_step: 0.2
@@ -43,12 +31,12 @@ rewards:
     ejection_penalty: -0.15
   
   impostor:
-    win: 0.5  # Reduced - win should be supplementary, not dominant
-    kill: 1.0
-    kill_witness_penalty: -0.3  # Penalty per witness when killing
-    kill_early_penalty: -0.2  # Penalty for killing early in episode (<20%)
-    proximity_penalty: -0.05  # Penalty for being near 2+ survivors
-    suspicious_penalty: -0.1  # Penalty for being near fresh bodies
+    win: 0.5 
+    kill: 0.8
+    kill_witness_penalty: -0.6
+    kill_early_penalty: -0.4
+    proximity_penalty: -0.05  
+    suspicious_penalty: -0.1  
     ejected: -2.0
     ejection_bonus: 0.3
     ejection_penalty: -0.5
@@ -77,8 +65,8 @@ training:
     use_lstm: false
     lstm_cell_size: 256
     max_seq_len: 20
-  total_timesteps: 1000000
-  checkpoint_timesteps: 100000
+  total_timesteps: 3000000
+  checkpoint_timesteps: 1000000
   evaluation_interval: 25
   evaluation_num_episodes: 10
 

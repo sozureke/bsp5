@@ -52,6 +52,9 @@ class GameConfig:
     # Memory mode
     memory_mode: str = "none"  # "none", "aggregated", "recurrent"
     
+    # Suspicion settings
+    suspicion_delay_ticks: int = 30  # Delay before suspicion becomes active
+    
     # Rewards
     reward_win: float = 1.0
     reward_loss: float = -1.0

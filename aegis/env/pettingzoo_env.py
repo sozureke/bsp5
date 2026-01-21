@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Optional, Any
+from dataclasses import dataclass
 import functools
 
 import numpy as np
@@ -15,6 +16,15 @@ from aegis.obs.builder import ObservationBuilder
 from aegis.obs.spaces import ObservationSpaces
 from aegis.logging.event_writer import EventWriter
 from aegis.logging.metrics import EpisodeMetrics
+
+
+@dataclass
+class SuspectEvent:
+    """Represents a suspicious event that may become active after delay."""
+    target_agent: int
+    event_type: str  # "witness_kill", "near_body", "suspicious_proximity"
+    tick_created: int
+    suspicion_value: float
 
 
 class AegisEnv(ParallelEnv):
@@ -78,6 +88,10 @@ class AegisEnv(ParallelEnv):
         # Maps agent_id -> ticks spent near other agents (consecutive)
         self.proximity_ticks: dict[int, int] = {}
         
+        # Delayed suspicion buffers
+        self.pending_suspicions: dict[int, list[SuspectEvent]] = {}
+        self.active_suspicions: dict[int, list[SuspectEvent]] = {}
+        
     def _agent_id_to_name(self, agent_id: int) -> str:
         """Convert numeric agent ID to string name."""
         return f"agent_{agent_id}"
@@ -124,6 +138,10 @@ class AegisEnv(ParallelEnv):
         # Reset proximity tracking
         self.proximity_ticks = {i: 0 for i in range(self.config.num_agents)}
         
+        # Reset suspicion buffers
+        self.pending_suspicions = {i: [] for i in range(self.config.num_agents)}
+        self.active_suspicions = {i: [] for i in range(self.config.num_agents)}
+        
         # Log initial events
         if self.event_writer:
             for event in init_events:
@@ -169,6 +187,9 @@ class AegisEnv(ParallelEnv):
         # Update proximity tracking before step
         self._update_proximity_tracking(old_world)
         
+        # Activate delayed suspicions (move from pending to active and update scores)
+        self._activate_delayed_suspicions(self.world.tick)
+        
         # Apply temporal decay to suspicion scores
         self._decay_suspicion(old_world)
         
@@ -183,6 +204,13 @@ class AegisEnv(ParallelEnv):
         
         # Update suspicion scores from events (after step, before rewards)
         self._update_suspicion_from_events(events, old_world, next_world)
+        
+        # Clear pending suspicions after meeting ends
+        for event in events:
+            if event.event_type == EventType.MEETING_END:
+                for agent_id in range(self.config.num_agents):
+                    self.pending_suspicions[agent_id] = []
+                break
         
         self._update_metrics(events)
         
@@ -489,9 +517,12 @@ class AegisEnv(ParallelEnv):
         new_world: WorldState,
     ) -> None:
         """
-        Update suspicion scores based on events.
+        Buffer suspicious events for delayed activation.
         
         This is internal environment state only - not exposed to agents.
+        
+        Events are stored in pending_suspicions and become active after
+        suspicion_delay_ticks have passed.
         
         Requirements:
         - Impostor kills: +0.3 if at least one witness is nearby
@@ -500,6 +531,8 @@ class AegisEnv(ParallelEnv):
         - Survivor near body: +0.05
         - Survivor task progress: -0.05
         """
+        current_tick = new_world.tick
+        
         for event in events:
             if event.event_type == EventType.KILL:
                 killer_id = event.data["killer_id"]
@@ -522,9 +555,15 @@ class AegisEnv(ParallelEnv):
                             if dist <= self.config.vision_radius:
                                 witnesses.append(agent_id)
                     
-                    # +0.3 if at least one witness is nearby
+                    # +0.3 if at least one witness is nearby - buffer this event
                     if len(witnesses) > 0:
-                        self.suspicion_score[killer_id] += 0.3
+                        suspect_event = SuspectEvent(
+                            target_agent=killer_id,
+                            event_type="witness_kill",
+                            tick_created=current_tick,
+                            suspicion_value=0.3
+                        )
+                        self.pending_suspicions[killer_id].append(suspect_event)
                     
                     # Reset kill counter
                     self.ticks_since_kill[killer_id] = 0
@@ -540,7 +579,7 @@ class AegisEnv(ParallelEnv):
                         # Check if body is "fresh" (killed recently, within last 10 ticks)
                         body_age = old_world.tick - body.tick_killed
                         if body_age <= 10:
-                            # Agents who were in same room as fresh body get suspicion
+                            # Agents who were in same room as fresh body get suspicion - buffer these events
                             for agent_id, agent in old_world.agents.items():
                                 if agent_id == reporter_id:
                                     continue  # Reporter is doing their job
@@ -549,20 +588,32 @@ class AegisEnv(ParallelEnv):
                                 if agent.room == body_room:
                                     if agent.role == Role.IMPOSTOR:
                                         # Impostor near body: +0.2
-                                        self.suspicion_score[agent_id] += 0.2
+                                        suspect_event = SuspectEvent(
+                                            target_agent=agent_id,
+                                            event_type="near_body",
+                                            tick_created=current_tick,
+                                            suspicion_value=0.2
+                                        )
+                                        self.pending_suspicions[agent_id].append(suspect_event)
                                     else:
                                         # Survivor near body: +0.05
-                                        self.suspicion_score[agent_id] += 0.05
+                                        suspect_event = SuspectEvent(
+                                            target_agent=agent_id,
+                                            event_type="near_body",
+                                            tick_created=current_tick,
+                                            suspicion_value=0.05
+                                        )
+                                        self.pending_suspicions[agent_id].append(suspect_event)
             
             elif event.event_type == EventType.TASK_STEP_COMPLETE:
                 agent_id = event.data["agent_id"]
                 agent = new_world.agents.get(agent_id)
                 if agent and agent.role == Role.SURVIVOR:
-                    # Survivor task progress: -0.05
+                    # Survivor task progress: -0.05 (reduces suspicion immediately)
+                    # This doesn't need delay as it's exonerating evidence
                     self.suspicion_score[agent_id] = max(0.0, self.suspicion_score[agent_id] - 0.05)
         
-        # Update suspicion for impostors staying near other agents
-        # Check proximity ticks accumulated during this step
+        # Update suspicion for impostors staying near other agents - buffer these events
         for agent_id, agent in new_world.agents.items():
             if not agent.alive:
                 continue
@@ -571,7 +622,49 @@ class AegisEnv(ParallelEnv):
                 # Add suspicion every 5 ticks while near other agents (5, 10, 15, etc.)
                 proximity_count = self.proximity_ticks.get(agent_id, 0)
                 if proximity_count >= 5 and proximity_count % 5 == 0:
-                    self.suspicion_score[agent_id] += 0.1
+                    suspect_event = SuspectEvent(
+                        target_agent=agent_id,
+                        event_type="suspicious_proximity",
+                        tick_created=current_tick,
+                        suspicion_value=0.1
+                    )
+                    self.pending_suspicions[agent_id].append(suspect_event)
+    
+    def _activate_delayed_suspicions(self, current_tick: int) -> None:
+        """
+        Activate pending suspicions that have passed the delay threshold.
+        
+        Moves events from pending_suspicions to active_suspicions if:
+        current_tick - event.tick_created >= suspicion_delay_ticks
+        
+        Then updates suspicion scores based on newly activated events.
+        """
+        delay = self.config.suspicion_delay_ticks
+        
+        for agent_id in range(self.config.num_agents):
+            pending = self.pending_suspicions.get(agent_id, [])
+            if not pending:
+                continue
+            
+            # Split pending events into still_pending and newly_active
+            still_pending = []
+            newly_active = []
+            
+            for event in pending:
+                if current_tick - event.tick_created >= delay:
+                    newly_active.append(event)
+                else:
+                    still_pending.append(event)
+            
+            # Update buffers
+            self.pending_suspicions[agent_id] = still_pending
+            
+            # Apply newly activated suspicions to scores
+            for event in newly_active:
+                self.suspicion_score[agent_id] += event.suspicion_value
+            
+            # Add to active suspicions (for potential future use/debugging)
+            self.active_suspicions[agent_id].extend(newly_active)
         
         # Clamp all suspicion scores to [0, 1]
         for agent_id in self.suspicion_score:

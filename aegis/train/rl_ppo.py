@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import time
 from dataclasses import dataclass, field, fields, replace
@@ -826,12 +827,16 @@ def collect_rollout(
         if terminated:
             survivor_rewards = []
             impostor_rewards = []
+            impostor_ejected = False
             for name in agent_names:
                 role = obs_dict[name]["self_role"]
                 if role == 0:
                     survivor_rewards.append(episode_rewards[name])
                 else:
                     impostor_rewards.append(episode_rewards[name])
+                    # Check if this impostor was ejected
+                    if infos[name].get("was_ejected", False):
+                        impostor_ejected = True
             
             completed_episodes.append({
                 "total_reward": sum(episode_rewards.values()),
@@ -840,6 +845,7 @@ def collect_rollout(
                 "winner": infos[agent_names[0]].get("winner"),
                 "survivor_mean_reward": np.mean(survivor_rewards) if survivor_rewards else 0.0,
                 "impostor_mean_reward": np.mean(impostor_rewards) if impostor_rewards else 0.0,
+                "impostor_ejected": impostor_ejected,
             })
             
             if debug_rewards and episode_stats is not None:
@@ -934,6 +940,10 @@ def ppo_update(
     total_approx_kl = 0.0
     total_clipfrac = 0.0
     total_v_clipfrac = 0.0
+    total_survivor_value = 0.0
+    total_impostor_value = 0.0
+    num_survivor_samples = 0
+    num_impostor_samples = 0
     num_updates = 0
     
     for epoch in range(args.update_epochs):
@@ -958,6 +968,17 @@ def ppo_update(
             _, new_logprobs, entropy, new_values = agent.get_action_and_value(
                 mb_obs, mb_action_masks, mb_roles, mb_actions
             )
+            
+            # Track mean values per critic for logging
+            with torch.no_grad():
+                survivor_mask = (mb_roles == 0)
+                impostor_mask = (mb_roles == 1)
+                if survivor_mask.any():
+                    total_survivor_value += new_values[survivor_mask].mean().item()
+                    num_survivor_samples += 1
+                if impostor_mask.any():
+                    total_impostor_value += new_values[impostor_mask].mean().item()
+                    num_impostor_samples += 1
             
             # Policy loss
             logratio = new_logprobs - mb_old_logprobs
@@ -1022,6 +1043,8 @@ def ppo_update(
         "approx_kl": total_approx_kl / num_updates,
         "clipfrac": total_clipfrac / num_updates,
         "v_clipfrac": total_v_clipfrac / num_updates,
+        "mean_survivor_value": total_survivor_value / num_survivor_samples if num_survivor_samples > 0 else 0.0,
+        "mean_impostor_value": total_impostor_value / num_impostor_samples if num_impostor_samples > 0 else 0.0,
     }
 
 
@@ -1097,9 +1120,18 @@ def train(args: Args):
     all_impostor_rewards = []
     all_debug_stats = []
     
+    # Track episode outcomes for win/ejection rates
+    all_winners = []  # List of winner values (0=survivor, 1=impostor)
+    all_impostor_ejected = []  # List of booleans indicating if impostor was ejected
+    
     obs_dict, _ = env.reset()
     
     os.makedirs(args.checkpoint_dir, exist_ok=True)
+    
+    # Setup JSON logging file
+    log_file_path = os.path.join(args.checkpoint_dir, "training_log.json")
+    log_file = open(log_file_path, "w")
+    print(f"Structured logging enabled: {log_file_path}")
     
     next_checkpoint_step = args.checkpoint_timesteps if args.checkpoint_timesteps else None
     
@@ -1110,100 +1142,145 @@ def train(args: Args):
     print(f"Total updates: {num_total_updates}")
     print()
     
-    while global_step < args.total_timesteps:
-        buffer.reset()
-        obs_dict, completed_episodes, last_dones, episode_debug_stats = collect_rollout(
-            env, agent, buffer, obs_dict, args.device, args.role_rewards, args.debug_rewards
-        )
-        
-        global_step += batch_size
-        num_updates += 1
-        
-        for ep_info in completed_episodes:
-            all_episode_rewards.append(ep_info["mean_reward"])
-            all_episode_lengths.append(ep_info["length"])
-            if "survivor_mean_reward" in ep_info:
-                all_survivor_rewards.append(ep_info["survivor_mean_reward"])
-            if "impostor_mean_reward" in ep_info:
-                all_impostor_rewards.append(ep_info["impostor_mean_reward"])
-        
-        if args.debug_rewards:
-            all_debug_stats.extend(episode_debug_stats)
-        
-        obs_flat = []
-        roles_list = []
-        for name in env.possible_agents:
-            obs_flat.append(flatten_obs(obs_dict[name]))
-            roles_list.append(obs_dict[name]["self_role"])
-        obs_tensor = torch.tensor(np.array(obs_flat), dtype=torch.float32, device=args.device)
-        roles_tensor = torch.tensor(np.array(roles_list), dtype=torch.long, device=args.device)
-        
-        with torch.no_grad():
-            last_value = agent.get_value(obs_tensor, roles_tensor)
-        
-        returns, advantages = buffer.compute_returns_and_advantages(
-            last_value, last_dones, args.gamma, args.gae_lambda
-        )
-        
-        update_stats = ppo_update(agent, optimizer, buffer, returns, advantages, args)
-        
-        if num_updates % args.log_interval == 0:
-            elapsed = time.time() - start_time
-            sps = global_step / elapsed
+    try:
+        while global_step < args.total_timesteps:
+            buffer.reset()
+            obs_dict, completed_episodes, last_dones, episode_debug_stats = collect_rollout(
+                env, agent, buffer, obs_dict, args.device, args.role_rewards, args.debug_rewards
+            )
             
-            print(f"Update {num_updates:5d} | Step {global_step:8,d} | SPS {sps:6.0f}")
+            global_step += batch_size
+            num_updates += 1
             
-            if all_episode_rewards:
-                recent_rewards = all_episode_rewards[-100:]
-                recent_lengths = all_episode_lengths[-100:]
-                print(f"Episodes: {len(all_episode_rewards):5d} | "
-                      f"Mean reward: {np.mean(recent_rewards):7.3f} | "
-                      f"Mean length: {np.mean(recent_lengths):6.1f}")
+            for ep_info in completed_episodes:
+                all_episode_rewards.append(ep_info["mean_reward"])
+                all_episode_lengths.append(ep_info["length"])
+                if "survivor_mean_reward" in ep_info:
+                    all_survivor_rewards.append(ep_info["survivor_mean_reward"])
+                if "impostor_mean_reward" in ep_info:
+                    all_impostor_rewards.append(ep_info["impostor_mean_reward"])
+                # Track winners and ejections
+                winner = ep_info.get("winner")
+                if winner is not None:
+                    all_winners.append(int(winner))
+                if "impostor_ejected" in ep_info:
+                    all_impostor_ejected.append(ep_info["impostor_ejected"])
+            
+            if args.debug_rewards:
+                all_debug_stats.extend(episode_debug_stats)
+            
+            obs_flat = []
+            roles_list = []
+            for name in env.possible_agents:
+                obs_flat.append(flatten_obs(obs_dict[name]))
+                roles_list.append(obs_dict[name]["self_role"])
+            obs_tensor = torch.tensor(np.array(obs_flat), dtype=torch.float32, device=args.device)
+            roles_tensor = torch.tensor(np.array(roles_list), dtype=torch.long, device=args.device)
+            
+            with torch.no_grad():
+                last_value = agent.get_value(obs_tensor, roles_tensor)
+            
+            returns, advantages = buffer.compute_returns_and_advantages(
+                last_value, last_dones, args.gamma, args.gae_lambda
+            )
+            
+            update_stats = ppo_update(agent, optimizer, buffer, returns, advantages, args)
+            
+            if num_updates % args.log_interval == 0:
+                elapsed = time.time() - start_time
+                sps = global_step / elapsed
                 
+                print(f"Update {num_updates:5d} | Step {global_step:8,d} | SPS {sps:6.0f}")
+                
+                recent_rewards = all_episode_rewards[-100:] if all_episode_rewards else []
+                recent_lengths = all_episode_lengths[-100:] if all_episode_lengths else []
                 recent_survivor = all_survivor_rewards[-100:] if all_survivor_rewards else []
                 recent_impostor = all_impostor_rewards[-100:] if all_impostor_rewards else []
-                if recent_survivor or recent_impostor:
-                    surv_mean = np.mean(recent_survivor) if recent_survivor else 0.0
-                    imp_mean = np.mean(recent_impostor) if recent_impostor else 0.0
-                    print(f"Role rewards: Survivor {surv_mean:7.3f} | Impostor {imp_mean:7.3f}")
-                    if recent_impostor:
-                        imp_min, imp_max = min(recent_impostor), max(recent_impostor)
-                        print(f"Impostor range: [{imp_min:.2f}, {imp_max:.2f}]")
+                recent_winners = all_winners[-100:] if all_winners else []
+                recent_ejected = all_impostor_ejected[-100:] if all_impostor_ejected else []
+                
+                mean_reward = np.mean(recent_rewards) if recent_rewards else 0.0
+                mean_ep_len = np.mean(recent_lengths) if recent_lengths else 0.0
+                survivor_reward_mean = np.mean(recent_survivor) if recent_survivor else 0.0
+                impostor_reward_mean = np.mean(recent_impostor) if recent_impostor else 0.0
+                
+                # Compute win/ejection rates
+                impostor_win_rate = 0.0
+                if recent_winners:
+                    impostor_wins = sum(1 for w in recent_winners if w == 1)
+                    impostor_win_rate = impostor_wins / len(recent_winners)
+                
+                impostor_ejected_rate = 0.0
+                if recent_ejected:
+                    impostor_ejected_rate = sum(recent_ejected) / len(recent_ejected)
+                
+                if all_episode_rewards:
+                    print(f"Episodes: {len(all_episode_rewards):5d} | "
+                          f"Mean reward: {mean_reward:7.3f} | "
+                          f"Mean length: {mean_ep_len:6.1f}")
+                    
+                    if recent_survivor or recent_impostor:
+                        print(f"Role rewards: Survivor {survivor_reward_mean:7.3f} | Impostor {impostor_reward_mean:7.3f}")
+                        if recent_impostor:
+                            imp_min, imp_max = min(recent_impostor), max(recent_impostor)
+                            print(f"Impostor range: [{imp_min:.2f}, {imp_max:.2f}]")
+                
+                print(f"  PG loss: {update_stats['pg_loss']:7.4f} | "
+                      f"V loss: {update_stats['v_loss']:7.4f} | "
+                      f"Entropy: {update_stats['entropy']:6.4f} | "
+                      f"KL: {update_stats['approx_kl']:6.4f}")
+                print(f"  Critic values: Survivor {update_stats['mean_survivor_value']:7.3f} | "
+                      f"Impostor {update_stats['mean_impostor_value']:7.3f}")
+                print()
+                
+                # Write structured log entry (JSONL format)
+                log_entry = {
+                    "step": int(global_step),
+                    "update": int(num_updates),
+                    "mean_reward": float(mean_reward),
+                    "mean_ep_len": float(mean_ep_len),
+                    "survivor_reward": float(survivor_reward_mean),
+                    "impostor_reward": float(impostor_reward_mean),
+                    "impostor_win_rate": float(impostor_win_rate),
+                    "impostor_ejected_rate": float(impostor_ejected_rate),
+                    "entropy": float(update_stats['entropy']),
+                    "value_loss": float(update_stats['v_loss']),
+                    "policy_loss": float(update_stats['pg_loss']),
+                }
+                log_file.write(json.dumps(log_entry) + "\n")
+                log_file.flush()
             
-            print(f"  PG loss: {update_stats['pg_loss']:7.4f} | "
-                  f"V loss: {update_stats['v_loss']:7.4f} | "
-                  f"Entropy: {update_stats['entropy']:6.4f} | "
-                  f"KL: {update_stats['approx_kl']:6.4f}")
-            print()
-        
-        if args.debug_rewards and num_updates % args.debug_rewards_interval == 0 and all_debug_stats:
-            print_reward_debug(all_debug_stats[-50:], len(all_episode_rewards))
-            all_debug_stats = []
-        
-        should_save = False
-        checkpoint_label = ""
-        
-        if next_checkpoint_step is not None:
-            if global_step >= next_checkpoint_step:
-                should_save = True
-                checkpoint_label = f"step_{global_step}"
-                next_checkpoint_step += args.checkpoint_timesteps
-        else:
-            if num_updates % args.save_interval == 0:
-                should_save = True
-                checkpoint_label = str(num_updates)
-        
-        if should_save:
-            checkpoint_path = os.path.join(
-                args.checkpoint_dir, f"ppo_checkpoint_{checkpoint_label}.pt"
-            )
-            torch.save({
-                "model_state_dict": agent.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "global_step": global_step,
-                "num_updates": num_updates,
-            }, checkpoint_path)
-            print(f"Saved checkpoint: {checkpoint_path}")
+            if args.debug_rewards and num_updates % args.debug_rewards_interval == 0 and all_debug_stats:
+                print_reward_debug(all_debug_stats[-50:], len(all_episode_rewards))
+                all_debug_stats = []
+            
+            should_save = False
+            checkpoint_label = ""
+            
+            if next_checkpoint_step is not None:
+                if global_step >= next_checkpoint_step:
+                    should_save = True
+                    checkpoint_label = f"step_{global_step}"
+                    next_checkpoint_step += args.checkpoint_timesteps
+            else:
+                if num_updates % args.save_interval == 0:
+                    should_save = True
+                    checkpoint_label = str(num_updates)
+            
+            if should_save:
+                checkpoint_path = os.path.join(
+                    args.checkpoint_dir, f"ppo_checkpoint_{checkpoint_label}.pt"
+                )
+                torch.save({
+                    "model_state_dict": agent.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "global_step": global_step,
+                    "num_updates": num_updates,
+                }, checkpoint_path)
+                print(f"Saved checkpoint: {checkpoint_path}")
+    finally:
+        log_file.close()
+        print(f"Training log saved to {log_file_path}")
     
     final_path = os.path.join(args.checkpoint_dir, "ppo_final.pt")
     torch.save({
