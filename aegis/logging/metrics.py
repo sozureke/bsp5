@@ -32,12 +32,27 @@ class EpisodeMetrics:
     # Voting accuracy (for analysis)
     correct_ejections: int = 0  # Impostors ejected
     wrong_ejections: int = 0     # Survivors ejected
+    failed_votes_low_confidence: int = 0  # Votes that failed due to low confidence
+    max_voting_scores: list[float] = field(default_factory=list)  # Track max score per meeting
     
     # Survivors at end
     survivors_alive: int = 0
     impostors_alive: int = 0
     
-    def finalize(self, world: WorldState) -> None:
+    # Communication actions (trust-based)
+    comm_support_count: int = 0
+    comm_accuse_count: int = 0
+    comm_defend_count: int = 0
+    comm_question_count: int = 0
+    comm_noop_count: int = 0
+    
+    # Trust statistics
+    trust_support_avg_delta: float = 0.0
+    trust_accuse_avg_delta: float = 0.0
+    trust_defend_avg_delta: float = 0.0
+    trust_question_avg_delta: float = 0.0
+    
+    def finalize(self, world: WorldState, trust_manager = None) -> None:
         """Finalize metrics at episode end."""
         self.episode_length = world.tick
         self.winner = world.winner
@@ -49,6 +64,18 @@ class EpisodeMetrics:
         # Task stats
         self.total_task_steps = world.total_task_steps()
         self.completed_task_steps = world.team_task_progress()
+        
+        # Trust statistics (if trust manager is provided)
+        if trust_manager is not None:
+            trust_stats = trust_manager.get_statistics()
+            self.comm_support_count = trust_stats.get("support_count", 0)
+            self.comm_accuse_count = trust_stats.get("accuse_count", 0)
+            self.comm_defend_count = trust_stats.get("defend_count", 0)
+            self.comm_question_count = trust_stats.get("question_count", 0)
+            self.trust_support_avg_delta = trust_stats.get("support_avg_delta", 0.0)
+            self.trust_accuse_avg_delta = trust_stats.get("accuse_avg_delta", 0.0)
+            self.trust_defend_avg_delta = trust_stats.get("defend_avg_delta", 0.0)
+            self.trust_question_avg_delta = trust_stats.get("question_avg_delta", 0.0)
     
     def to_dict(self) -> dict:
         """Convert to dictionary."""

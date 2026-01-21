@@ -838,6 +838,24 @@ def collect_rollout(
                     if infos[name].get("was_ejected", False):
                         impostor_ejected = True
             
+            # Collect communication metrics if available
+            comm_metrics = {}
+            if hasattr(env, 'metrics'):
+                metrics_dict = env.metrics.to_dict()
+                comm_metrics = {
+                    "comm_support_count": metrics_dict.get("comm_support_count", 0),
+                    "comm_accuse_count": metrics_dict.get("comm_accuse_count", 0),
+                    "comm_defend_count": metrics_dict.get("comm_defend_count", 0),
+                    "comm_question_count": metrics_dict.get("comm_question_count", 0),
+                    "comm_noop_count": metrics_dict.get("comm_noop_count", 0),
+                    "trust_support_avg_delta": metrics_dict.get("trust_support_avg_delta", 0.0),
+                    "trust_accuse_avg_delta": metrics_dict.get("trust_accuse_avg_delta", 0.0),
+                    "trust_defend_avg_delta": metrics_dict.get("trust_defend_avg_delta", 0.0),
+                    "trust_question_avg_delta": metrics_dict.get("trust_question_avg_delta", 0.0),
+                    "failed_votes_low_confidence": metrics_dict.get("failed_votes_low_confidence", 0),
+                    "max_voting_scores": metrics_dict.get("max_voting_scores", []),
+                }
+            
             completed_episodes.append({
                 "total_reward": sum(episode_rewards.values()),
                 "mean_reward": np.mean(list(episode_rewards.values())),
@@ -846,6 +864,7 @@ def collect_rollout(
                 "survivor_mean_reward": np.mean(survivor_rewards) if survivor_rewards else 0.0,
                 "impostor_mean_reward": np.mean(impostor_rewards) if impostor_rewards else 0.0,
                 "impostor_ejected": impostor_ejected,
+                **comm_metrics,  # Add communication metrics
             })
             
             if debug_rewards and episode_stats is not None:
@@ -1124,6 +1143,19 @@ def train(args: Args):
     all_winners = []  # List of winner values (0=survivor, 1=impostor)
     all_impostor_ejected = []  # List of booleans indicating if impostor was ejected
     
+    # Track communication metrics (for trust-based communication)
+    all_comm_support = []
+    all_comm_accuse = []
+    all_comm_defend = []
+    all_comm_question = []
+    all_comm_noop = []
+    all_trust_support_delta = []
+    all_trust_accuse_delta = []
+    all_trust_defend_delta = []
+    all_trust_question_delta = []
+    all_failed_votes = []
+    all_max_voting_scores = []
+    
     obs_dict, _ = env.reset()
     
     os.makedirs(args.checkpoint_dir, exist_ok=True)
@@ -1165,6 +1197,22 @@ def train(args: Args):
                     all_winners.append(int(winner))
                 if "impostor_ejected" in ep_info:
                     all_impostor_ejected.append(ep_info["impostor_ejected"])
+                
+                # Track communication metrics
+                if "comm_support_count" in ep_info:
+                    all_comm_support.append(ep_info["comm_support_count"])
+                    all_comm_accuse.append(ep_info["comm_accuse_count"])
+                    all_comm_defend.append(ep_info["comm_defend_count"])
+                    all_comm_question.append(ep_info["comm_question_count"])
+                    all_comm_noop.append(ep_info["comm_noop_count"])
+                    all_trust_support_delta.append(ep_info["trust_support_avg_delta"])
+                    all_trust_accuse_delta.append(ep_info["trust_accuse_avg_delta"])
+                    all_trust_defend_delta.append(ep_info["trust_defend_avg_delta"])
+                    all_trust_question_delta.append(ep_info["trust_question_avg_delta"])
+                    all_failed_votes.append(ep_info["failed_votes_low_confidence"])
+                    # Track max voting scores (can be multiple per episode)
+                    if ep_info["max_voting_scores"]:
+                        all_max_voting_scores.extend(ep_info["max_voting_scores"])
             
             if args.debug_rewards:
                 all_debug_stats.extend(episode_debug_stats)
@@ -1214,6 +1262,31 @@ def train(args: Args):
                 if recent_ejected:
                     impostor_ejected_rate = sum(recent_ejected) / len(recent_ejected)
                 
+                # Compute communication metrics averages
+                recent_comm_support = all_comm_support[-100:] if all_comm_support else []
+                recent_comm_accuse = all_comm_accuse[-100:] if all_comm_accuse else []
+                recent_comm_defend = all_comm_defend[-100:] if all_comm_defend else []
+                recent_comm_question = all_comm_question[-100:] if all_comm_question else []
+                recent_comm_noop = all_comm_noop[-100:] if all_comm_noop else []
+                recent_trust_support = all_trust_support_delta[-100:] if all_trust_support_delta else []
+                recent_trust_accuse = all_trust_accuse_delta[-100:] if all_trust_accuse_delta else []
+                recent_trust_defend = all_trust_defend_delta[-100:] if all_trust_defend_delta else []
+                recent_trust_question = all_trust_question_delta[-100:] if all_trust_question_delta else []
+                recent_failed_votes = all_failed_votes[-100:] if all_failed_votes else []
+                recent_max_scores = all_max_voting_scores[-200:] if all_max_voting_scores else []
+                
+                mean_comm_support = np.mean(recent_comm_support) if recent_comm_support else 0.0
+                mean_comm_accuse = np.mean(recent_comm_accuse) if recent_comm_accuse else 0.0
+                mean_comm_defend = np.mean(recent_comm_defend) if recent_comm_defend else 0.0
+                mean_comm_question = np.mean(recent_comm_question) if recent_comm_question else 0.0
+                mean_comm_noop = np.mean(recent_comm_noop) if recent_comm_noop else 0.0
+                mean_trust_support = np.mean(recent_trust_support) if recent_trust_support else 0.0
+                mean_trust_accuse = np.mean(recent_trust_accuse) if recent_trust_accuse else 0.0
+                mean_trust_defend = np.mean(recent_trust_defend) if recent_trust_defend else 0.0
+                mean_trust_question = np.mean(recent_trust_question) if recent_trust_question else 0.0
+                mean_failed_votes = np.mean(recent_failed_votes) if recent_failed_votes else 0.0
+                mean_max_voting_score = np.mean(recent_max_scores) if recent_max_scores else 0.0
+                
                 if all_episode_rewards:
                     print(f"Episodes: {len(all_episode_rewards):5d} | "
                           f"Mean reward: {mean_reward:7.3f} | "
@@ -1247,6 +1320,23 @@ def train(args: Args):
                     "value_loss": float(update_stats['v_loss']),
                     "policy_loss": float(update_stats['pg_loss']),
                 }
+                
+                # Add communication metrics if available
+                if recent_comm_support or recent_comm_accuse or recent_failed_votes:
+                    log_entry.update({
+                        "comm_support_count": float(mean_comm_support),
+                        "comm_accuse_count": float(mean_comm_accuse),
+                        "comm_defend_count": float(mean_comm_defend),
+                        "comm_question_count": float(mean_comm_question),
+                        "comm_noop_count": float(mean_comm_noop),
+                        "trust_support_avg_delta": float(mean_trust_support),
+                        "trust_accuse_avg_delta": float(mean_trust_accuse),
+                        "trust_defend_avg_delta": float(mean_trust_defend),
+                        "trust_question_avg_delta": float(mean_trust_question),
+                        "failed_votes_low_confidence": float(mean_failed_votes),
+                        "mean_max_voting_score": float(mean_max_voting_score),
+                    })
+                
                 log_file.write(json.dumps(log_entry) + "\n")
                 log_file.flush()
             

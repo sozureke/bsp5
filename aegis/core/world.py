@@ -1,11 +1,12 @@
-"""Dataclasses for WorldState, AgentState, TaskState, DoorState, BodyState, Phase enum."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 import copy
+
+if TYPE_CHECKING:
+    from aegis.core.rules import GameConfig
 
 
 class Phase(IntEnum):
@@ -123,6 +124,7 @@ class MeetingState:
     phase_timer: int = 0  # ticks elapsed in current meeting phase
     messages: list[tuple[int, int, int]] = field(default_factory=list)  # (tick, sender_id, token_id)
     votes: dict[int, Optional[int]] = field(default_factory=dict)  # voter_id -> target_id or None (skip)
+    comm_actions: list[tuple[int, int, int]] = field(default_factory=list)  # (tick, sender_id, action_id) for trust-based comm
 
 
 @dataclass

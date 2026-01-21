@@ -16,6 +16,8 @@ from aegis.obs.builder import ObservationBuilder
 from aegis.obs.spaces import ObservationSpaces
 from aegis.logging.event_writer import EventWriter
 from aegis.logging.metrics import EpisodeMetrics
+from aegis.comms.trust import TrustManager
+from aegis.comms.actions import CommVocab
 
 
 @dataclass
@@ -52,8 +54,17 @@ class AegisEnv(ParallelEnv):
         # Initialize engine
         self.engine = StepEngine(self.config)
         
+        # Trust-based communication system (initialize before obs_builder)
+        self.trust_manager: Optional[TrustManager] = None
+        if self.config.enable_trust_comm:
+            self.trust_manager = TrustManager(
+                num_agents=self.config.num_agents,
+                delay_ticks=self.config.trust_delay_ticks,
+                initial_trust=self.config.trust_initial_value,
+            )
+        
         # Initialize observation builder
-        self.obs_builder = ObservationBuilder(self.engine, self.config)
+        self.obs_builder = ObservationBuilder(self.engine, self.config, trust_manager=self.trust_manager)
         
         # Initialize observation spaces helper
         self.obs_spaces = ObservationSpaces(
@@ -142,6 +153,10 @@ class AegisEnv(ParallelEnv):
         self.pending_suspicions = {i: [] for i in range(self.config.num_agents)}
         self.active_suspicions = {i: [] for i in range(self.config.num_agents)}
         
+        # Reset trust manager
+        if self.trust_manager is not None:
+            self.trust_manager.reset(initial_trust=self.config.trust_initial_value)
+        
         # Log initial events
         if self.event_writer:
             for event in init_events:
@@ -193,9 +208,14 @@ class AegisEnv(ParallelEnv):
         # Apply temporal decay to suspicion scores
         self._decay_suspicion(old_world)
         
-        # Step the engine (voting resolution will use suspicion scores)
-        suspicion_scores = {agent_id: self.suspicion_score[agent_id] 
-                            for agent_id in range(self.config.num_agents)}
+        # Process trust-based communication actions
+        if self.trust_manager is not None and self.world.meeting is not None:
+            self._process_comm_actions(self.world, joint_actions)
+            # Activate delayed trust updates
+            self.trust_manager.activate_delayed_updates(self.world.tick)
+        
+        # Step the engine (voting resolution will use suspicion scores combined with trust)
+        suspicion_scores = self._compute_voting_scores()
         next_world, events = self.engine.step(self.world, joint_actions, suspicion_scores=suspicion_scores)
         
         if self.event_writer:
@@ -205,11 +225,13 @@ class AegisEnv(ParallelEnv):
         # Update suspicion scores from events (after step, before rewards)
         self._update_suspicion_from_events(events, old_world, next_world)
         
-        # Clear pending suspicions after meeting ends
+        # Clear pending suspicions and trust updates after meeting ends
         for event in events:
             if event.event_type == EventType.MEETING_END:
                 for agent_id in range(self.config.num_agents):
                     self.pending_suspicions[agent_id] = []
+                if self.trust_manager is not None:
+                    self.trust_manager.clear_pending_updates()
                 break
         
         self._update_metrics(events)
@@ -291,7 +313,7 @@ class AegisEnv(ParallelEnv):
         ]
         
         if self.world.terminated or self.world.truncated:
-            self.metrics.finalize(self.world)
+            self.metrics.finalize(self.world, trust_manager=self.trust_manager)
             if self.event_writer:
                 self.event_writer.flush()
         
@@ -683,6 +705,99 @@ class AegisEnv(ParallelEnv):
                 self.metrics.ejections += 1
             elif event.event_type == EventType.MESSAGE_SENT:
                 self.metrics.messages_sent += 1
+            elif event.event_type == EventType.COMM_ACTION:
+                # Track communication action counts
+                action_name = event.data.get("action_name", "")
+                if "SUPPORT" in action_name:
+                    self.metrics.comm_support_count += 1
+                elif "ACCUSE" in action_name:
+                    self.metrics.comm_accuse_count += 1
+                elif "DEFEND" in action_name:
+                    self.metrics.comm_defend_count += 1
+                elif "QUESTION" in action_name:
+                    self.metrics.comm_question_count += 1
+                elif "NO_OP" in action_name:
+                    self.metrics.comm_noop_count += 1
+            elif event.event_type == EventType.VOTE_FAILED_LOW_CONFIDENCE:
+                # Track failed votes due to confidence threshold
+                self.metrics.failed_votes_low_confidence += 1
+                max_score = event.data.get("max_score", 0.0)
+                self.metrics.max_voting_scores.append(max_score)
+    
+    def _process_comm_actions(self, world: WorldState, joint_actions: dict[int, int]) -> None:
+        """
+        Process communication actions and buffer them for delayed trust updates.
+        
+        This method is called during meeting phases when trust communication is enabled.
+        """
+        if self.trust_manager is None or world.meeting is None:
+            return
+        
+        for agent_id, action in joint_actions.items():
+            agent = world.agents[agent_id]
+            if not agent.alive:
+                continue
+            
+            action_type, param = self.engine.parse_action(action)
+            if action_type == "comm_action":
+                comm_action_id = param
+                # Buffer the communication action for delayed trust update
+                self.trust_manager.buffer_comm_action(
+                    sender_id=agent_id,
+                    action_id=comm_action_id,
+                    current_tick=world.tick,
+                    support_delta=self.config.trust_support_delta,
+                    accuse_delta=self.config.trust_accuse_delta,
+                    defend_delta=self.config.trust_defend_delta,
+                    question_delta=self.config.trust_question_delta,
+                )
+    
+    def _compute_voting_scores(self) -> dict[int, float]:
+        """
+        Compute voting scores by combining suspicion scores with trust.
+        
+        Voting score = suspicion * (1 - trust_weight) + distrust * trust_weight
+        
+        This allows for controlled ablation studies:
+        - trust_weight = 0.0: pure suspicion-based voting (baseline)
+        - trust_weight = 1.0: pure trust-based voting
+        - trust_weight in (0, 1): hybrid approach
+        
+        Returns:
+            dict mapping agent_id -> voting score [0, 1]
+        """
+        # Ensure trust_voting_weight is in valid range
+        assert 0.0 <= self.config.trust_voting_weight <= 1.0, \
+            f"trust_voting_weight must be in [0, 1], got {self.config.trust_voting_weight}"
+        
+        voting_scores = {}
+        
+        if self.trust_manager is None or self.config.trust_voting_weight == 0.0:
+            # No trust integration, use pure suspicion scores
+            for agent_id in range(self.config.num_agents):
+                voting_scores[agent_id] = self.suspicion_score[agent_id]
+        else:
+            # Combine suspicion with trust-based distrust
+            distrust_scores = self.trust_manager.get_distrust_scores()
+            trust_weight = self.config.trust_voting_weight
+            
+            for agent_id in range(self.config.num_agents):
+                suspicion = self.suspicion_score[agent_id]
+                distrust = distrust_scores.get(agent_id, 0.5)
+                
+                # EXACT LINEAR COMBINATION (no nonlinear mixing)
+                voting_scores[agent_id] = (
+                    suspicion * (1.0 - trust_weight) + distrust * trust_weight
+                )
+                
+                # Ensure scores stay in [0, 1]
+                voting_scores[agent_id] = max(0.0, min(1.0, voting_scores[agent_id]))
+                
+                # POST-CONDITION: Voting score must be in [0, 1]
+                assert 0.0 <= voting_scores[agent_id] <= 1.0, \
+                    f"Voting score out of bounds for agent {agent_id}: {voting_scores[agent_id]}"
+        
+        return voting_scores
     
     def render(self) -> Optional[str]:
         """Render the environment."""

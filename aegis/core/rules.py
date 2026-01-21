@@ -49,6 +49,19 @@ class GameConfig:
     max_messages_per_meeting: int = 10  # Per agent
     comm_mode: str = "broadcast"  # "broadcast" or "local"
     
+    # Trust-based communication settings
+    enable_trust_comm: bool = False  # Enable discrete communication actions
+    trust_delay_ticks: int = 5  # Delay before trust updates take effect
+    trust_initial_value: float = 0.5  # Initial trust between agents [0, 1]
+    trust_support_delta: float = 0.15  # Trust increase from SUPPORT action
+    trust_accuse_delta: float = -0.20  # Trust decrease from ACCUSE action
+    trust_defend_delta: float = 0.05  # Trust increase from DEFEND_SELF
+    trust_question_delta: float = -0.08  # Trust decrease from QUESTION
+    trust_voting_weight: float = 0.3  # Weight of trust in voting (0=no effect, 1=full effect)
+    
+    # Voting confidence threshold (forces evidence accumulation)
+    voting_confidence_threshold: float = 0.0  # Minimum voting score to be eligible for ejection [0, 1]
+    
     # Memory mode
     memory_mode: str = "none"  # "none", "aggregated", "recurrent"
     
@@ -71,6 +84,21 @@ class GameConfig:
     
     # Seed
     seed: Optional[int] = None
+    
+    def __post_init__(self):
+        """Validate configuration parameters."""
+        # Validate trust communication settings
+        if self.enable_trust_comm:
+            assert 0.0 <= self.trust_initial_value <= 1.0, \
+                f"trust_initial_value must be in [0, 1], got {self.trust_initial_value}"
+            assert 0.0 <= self.trust_voting_weight <= 1.0, \
+                f"trust_voting_weight must be in [0, 1], got {self.trust_voting_weight}"
+            assert self.trust_delay_ticks >= 0, \
+                f"trust_delay_ticks must be non-negative, got {self.trust_delay_ticks}"
+        
+        # Validate voting confidence threshold
+        assert 0.0 <= self.voting_confidence_threshold <= 1.0, \
+            f"voting_confidence_threshold must be in [0, 1], got {self.voting_confidence_threshold}"
     
     @classmethod
     def from_yaml(cls, path: str) -> "GameConfig":

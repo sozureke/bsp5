@@ -19,12 +19,14 @@ class EventType(str, Enum):
     MEETING_END = "meeting_end"
     VOTE_CAST = "vote_cast"
     EJECTION = "ejection"
+    VOTE_FAILED_LOW_CONFIDENCE = "vote_failed_low_confidence"
     DOOR_CLOSE = "door_close"
     DOOR_OPEN = "door_open"
     TASK_PROGRESS = "task_progress"
     TASK_STEP_COMPLETE = "task_step_complete"
     TASK_COMPLETE = "task_complete"
     MESSAGE_SENT = "message_sent"
+    COMM_ACTION = "comm_action"
     EVAC_ACTIVATED = "evac_activated"
     EVAC_PROGRESS = "evac_progress"
     WIN = "win"
@@ -77,6 +79,11 @@ def ejection_event(tick: int, ejected_id: int, role: int, votes: dict) -> Event:
     return make_event(EventType.EJECTION, tick, ejected_id=ejected_id, role=role, votes=votes)
 
 
+def vote_failed_event(tick: int, max_score: float, threshold: float, num_candidates: int) -> Event:
+    return make_event(EventType.VOTE_FAILED_LOW_CONFIDENCE, tick, 
+                     max_score=max_score, threshold=threshold, num_candidates=num_candidates)
+
+
 def door_close_event(tick: int, agent_id: int, edge: tuple[int, int]) -> Event:
     return make_event(EventType.DOOR_CLOSE, tick, agent_id=agent_id, edge=list(edge))
 
@@ -99,6 +106,10 @@ def task_complete_event(tick: int, agent_id: int, task_idx: int) -> Event:
 
 def message_sent_event(tick: int, sender_id: int, token_id: int) -> Event:
     return make_event(EventType.MESSAGE_SENT, tick, sender_id=sender_id, token_id=token_id)
+
+
+def comm_action_event(tick: int, sender_id: int, action_id: int, action_name: str) -> Event:
+    return make_event(EventType.COMM_ACTION, tick, sender_id=sender_id, action_id=action_id, action_name=action_name)
 
 
 def move_event(tick: int, agent_id: int, from_room: int, to_room: int) -> Event:

@@ -18,6 +18,7 @@ class ObservationSpaces:
         self.num_edges = num_edges
         self.num_agents = config.num_agents
         self.num_tokens = 20  # Token vocabulary size
+        self.num_comm_actions = 17  # Communication action vocabulary size
         self.max_bodies = config.num_agents  # Max possible bodies
         self.max_messages = 50  # Max messages to track per meeting
         self.max_tasks = config.tasks_per_survivor
@@ -33,6 +34,7 @@ class ObservationSpaces:
         # KILL[target] for each agent
         # CLOSE_DOOR[door] for each door
         # SEND_TOKEN[token] for each token
+        # COMM_ACTION[action] for each communication action
         # VOTE[agent] for each agent
         # VOTE_SKIP
         return (
@@ -42,6 +44,7 @@ class ObservationSpaces:
             self.num_agents +  # KILL
             self.num_edges +  # CLOSE_DOOR
             self.num_tokens +  # SEND_TOKEN
+            self.num_comm_actions +  # COMM_ACTION
             self.num_agents +  # VOTE
             1  # VOTE_SKIP
         )
@@ -125,6 +128,14 @@ class ObservationSpaces:
             
             # Tick info
             "tick": spaces.Box(low=0, high=self.config.max_ticks, shape=(1,), dtype=np.int32),
+            
+            # Trust vector (trust from this agent to all others)
+            "trust_vector": spaces.Box(
+                low=0.0,
+                high=1.0,
+                shape=(self.num_agents,),
+                dtype=np.float32
+            ),
             
             # Action mask
             "action_mask": spaces.Box(

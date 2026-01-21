@@ -6,6 +6,7 @@ A production-quality multi-agent reinforcement learning project implementing a c
 
 - **Two Roles**: Survivors and Impostors with distinct objectives and actions
 - **Communication System**: Discrete token-based messaging during meetings
+- **Trust-Based Communication**: Optional discrete actions (SUPPORT, ACCUSE, DEFEND, QUESTION) that influence voting through a trust matrix
 - **Task System**: Single-point and two-step tasks for survivors
 - **Meeting/Voting**: Body reports trigger discussion and voting phases
 - **Partial Observability**: Configurable vision radius limits what agents can see
@@ -204,6 +205,70 @@ Single Discrete space with action masking:
 - BODY_IN_ROOM_0 through BODY_IN_ROOM_2
 - I_WAS_IN_ROOM_0 through I_WAS_IN_ROOM_2
 - DOOR_CLOSED
+
+## Trust-Based Communication
+
+**NEW**: Optional discrete communication system for trust experiments. See [TRUST_COMMUNICATION.md](TRUST_COMMUNICATION.md) for full documentation.
+
+### Quick Start
+
+```bash
+# Run demo
+python aegis/scripts/demo_trust_comm.py
+
+# Run tests
+pytest aegis/tests/test_trust_comm.py -v
+
+# Train with trust communication enabled
+python -m aegis.train.rllib_ppo --config aegis/train/configs/trust_comm.yaml
+```
+
+### Communication Actions
+
+During meetings, agents can use 5 types of actions:
+- `SUPPORT(agent)`: Increase trust in an agent (+0.15)
+- `ACCUSE(agent)`: Decrease trust in an agent (-0.20)
+- `DEFEND_SELF`: Increase self-trust (+0.05)
+- `QUESTION(agent)`: Slight distrust (-0.08)
+- `NO_OP`: Do nothing
+
+### Logging & Analysis
+
+Communication actions are logged to JSONL event streams:
+
+```bash
+# Analyze communication patterns from logs
+python aegis/scripts/analyze_comm_logs.py events.jsonl
+
+# Compare patterns across multiple episodes
+python aegis/scripts/analyze_comm_logs.py --compare events1.jsonl events2.jsonl
+```
+
+Example event structure:
+```json
+{
+  "event_type": "comm_action",
+  "tick": 123,
+  "sender_id": 2,
+  "action_id": 7,
+  "action_name": "ACCUSE(1)"
+}
+```
+
+### Key Configuration
+
+```yaml
+enable_trust_comm: true           # Enable/disable system
+trust_delay_ticks: 5              # Delay before trust updates
+trust_voting_weight: 0.3          # Weight in voting (0=off, 1=full)
+```
+
+### Ablation Studies
+
+- **Communication On/Off**: Compare with and without communication
+- **Trust Weight**: Vary from 0.0 (pure suspicion) to 1.0 (pure trust)
+- **Delay Sensitivity**: Test immediate vs delayed evidence
+- **Trust Deltas**: Tune strength of communication effects
 
 ## Memory Modes
 

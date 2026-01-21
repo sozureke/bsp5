@@ -27,12 +27,14 @@ from aegis.core.events import (
     meeting_end_event,
     vote_cast_event,
     ejection_event,
+    vote_failed_event,
     door_close_event,
     door_open_event,
     task_progress_event,
     task_step_complete_event,
     task_complete_event,
     message_sent_event,
+    comm_action_event,
     move_event,
     phase_change_event,
     evac_activated_event,
@@ -84,17 +86,17 @@ class StepEngine:
         n_agents = self.config.num_agents
         n_doors = len(self.edges)
         n_tokens = 20  # Token vocab size
+        n_comm_actions = 17  # Communication action vocab size (NO_OP + 5*SUPPORT + 5*ACCUSE + DEFEND + 5*QUESTION)
         
-        # Action layout: [MOVE_0, ..., MOVE_R-1, WORK, REPORT, KILL_0, ..., KILL_N-1, 
-        #                 CLOSE_0, ..., CLOSE_D-1, TOKEN_0, ..., TOKEN_T-1, VOTE_0, ..., VOTE_N-1, VOTE_SKIP]
         self.offset_move = 0
         self.offset_work = n_rooms
         self.offset_report = n_rooms + 1
         self.offset_kill = n_rooms + 2
         self.offset_close = n_rooms + 2 + n_agents
         self.offset_token = n_rooms + 2 + n_agents + n_doors
-        self.offset_vote = n_rooms + 2 + n_agents + n_doors + n_tokens
-        self.offset_vote_skip = n_rooms + 2 + n_agents + n_doors + n_tokens + n_agents
+        self.offset_comm = n_rooms + 2 + n_agents + n_doors + n_tokens
+        self.offset_vote = n_rooms + 2 + n_agents + n_doors + n_tokens + n_comm_actions
+        self.offset_vote_skip = n_rooms + 2 + n_agents + n_doors + n_tokens + n_comm_actions + n_agents
         self.action_space_size = self.offset_vote_skip + 1
     
     def parse_action(self, action: int) -> tuple[str, int]:
@@ -109,8 +111,10 @@ class StepEngine:
             return ("kill", action - self.offset_kill)
         elif action < self.offset_token:
             return ("close_door", action - self.offset_close)
-        elif action < self.offset_vote:
+        elif action < self.offset_comm:
             return ("send_token", action - self.offset_token)
+        elif action < self.offset_vote:
+            return ("comm_action", action - self.offset_comm)
         elif action < self.offset_vote_skip:
             return ("vote", action - self.offset_vote)
         elif action == self.offset_vote_skip:
@@ -132,6 +136,8 @@ class StepEngine:
             return self.offset_close + param
         elif action_type == "send_token":
             return self.offset_token + param
+        elif action_type == "comm_action":
+            return self.offset_comm + param
         elif action_type == "vote":
             return self.offset_vote + param
         elif action_type == "vote_skip":
@@ -581,7 +587,7 @@ class StepEngine:
         return events
     
     def _apply_messages(self, world: WorldState, joint_actions: dict[int, int]) -> list[Event]:
-        """Apply message sending during meeting."""
+        """Apply message sending and communication actions during meeting."""
         events = []
         
         if world.meeting is None:
@@ -597,6 +603,15 @@ class StepEngine:
                 token_id = param
                 world.meeting.messages.append((world.tick, agent_id, token_id))
                 events.append(message_sent_event(world.tick, agent_id, token_id))
+            
+            elif action_type == "comm_action":
+                # Communication actions for trust system
+                comm_action_id = param
+                world.meeting.comm_actions.append((world.tick, agent_id, comm_action_id))
+                # Log communication action event
+                from aegis.comms.actions import CommVocab
+                action_name = CommVocab.action_to_string(comm_action_id)
+                events.append(comm_action_event(world.tick, agent_id, comm_action_id, action_name))
         
         return events
     
@@ -642,15 +657,20 @@ class StepEngine:
         """
         Resolve voting and potentially eject someone.
         
-        Voting mechanism: Probabilistic selection based on suspicion scores.
-        P(eject agent i) ∝ suspicion[i] with small uniform noise.
+        Voting mechanism: Probabilistic selection based on voting scores.
+        P(eject agent i) ∝ voting_score[i] with small uniform noise.
+        
+        Voting Confidence Gating:
+        - Only agents with voting_score >= voting_confidence_threshold are eligible
+        - This forces evidence accumulation via communication
         
         This is environment-internal causal memory - agents do not have direct
-        access to suspicion scores. Voting is NOT trained by agents.
+        access to voting scores. Voting is NOT trained by agents.
         
         Args:
             world: Current world state
-            suspicion_scores: Optional dict mapping agent_id -> suspicion score [0.0, 1.0]
+            suspicion_scores: Optional dict mapping agent_id -> voting score [0.0, 1.0]
+                            (renamed from suspicion_scores for clarity - these are composite scores)
                             If None, voting falls back to deterministic vote counting
         """
         events = []
@@ -669,34 +689,52 @@ class StepEngine:
                 vote_counts[None] = vote_counts.get(None, 0) + 1
         
         ejected_id = None
+        confidence_threshold = self.config.voting_confidence_threshold
+        max_voting_score = 0.0  # Track for logging
         
         if suspicion_scores is not None:
             alive_agent_ids = [a.agent_id for a in world.alive_agents()]
-            if len(alive_agent_ids) > 0:
-                suspicion_weights = []
-                for agent_id in alive_agent_ids:
-                    suspicion = suspicion_scores.get(agent_id, 0.0)
-                    noise = self._rng.uniform(0.0, 0.1)
-                    weight = suspicion + noise
-                    suspicion_weights.append(weight)
+            
+            # VOTING CONFIDENCE GATING: Filter to eligible candidates
+            eligible_candidates = []
+            eligible_scores = []
+            
+            for agent_id in alive_agent_ids:
+                score = suspicion_scores.get(agent_id, 0.0)
+                max_voting_score = max(max_voting_score, score)
                 
-                total_weight = sum(suspicion_weights)
+                # Only consider if score meets threshold
+                if score >= confidence_threshold:
+                    eligible_candidates.append(agent_id)
+                    eligible_scores.append(score)
+            
+            if eligible_candidates:
+                # Add noise for tie-breaking
+                noisy_scores = []
+                for score in eligible_scores:
+                    noise = self._rng.uniform(0.0, 0.1)
+                    noisy_scores.append(score + noise)
+                
+                total_weight = sum(noisy_scores)
                 if total_weight > 0:
-                    probabilities = [w / total_weight for w in suspicion_weights]
+                    probabilities = [w / total_weight for w in noisy_scores]
                     
-                        # Sample from distribution
+                    # Sample from distribution
                     selected_idx = self._rng.choices(
-                        range(len(alive_agent_ids)),
+                        range(len(eligible_candidates)),
                         weights=probabilities,
                         k=1
                     )[0]
-                    ejected_id = alive_agent_ids[selected_idx]
-                else:
-                    # If all suspicions are 0 and noise is low, fall back to vote-based selection
-                    max_votes = max(vote_counts.values()) if vote_counts else 0
-                    max_targets = [t for t, v in vote_counts.items() if v == max_votes]
-                    if len(max_targets) == 1 and max_targets[0] is not None:
-                        ejected_id = max_targets[0]
+                    ejected_id = eligible_candidates[selected_idx]
+            else:
+                # No eligible candidates (all below threshold) → no ejection
+                # Log this event for analysis
+                events.append(vote_failed_event(
+                    world.tick, 
+                    max_voting_score, 
+                    confidence_threshold,
+                    len(alive_agent_ids)
+                ))
         else:
             # Fallback: deterministic vote counting (when suspicion_scores not provided)
             max_votes = max(vote_counts.values()) if vote_counts else 0
@@ -704,7 +742,7 @@ class StepEngine:
             if len(max_targets) == 1 and max_targets[0] is not None:
                 ejected_id = max_targets[0]
         
-        # Eject the selected agent
+        # Eject the selected agent (if eligible)
         if ejected_id is not None:
             ejected = world.agents[ejected_id]
             ejected.alive = False

@@ -8,18 +8,21 @@ import numpy as np
 from aegis.core.world import WorldState, Phase, Role
 from aegis.core.rules import GameConfig
 from aegis.core.engine import StepEngine
+from aegis.comms.actions import CommVocab
 
 
 class ObservationBuilder:
     """Builds observations and action masks for agents."""
     
-    def __init__(self, engine: StepEngine, config: GameConfig):
+    def __init__(self, engine: StepEngine, config: GameConfig, trust_manager=None):
         self.engine = engine
         self.config = config
+        self.trust_manager = trust_manager
         self.num_rooms = len(engine.rooms)
         self.num_edges = len(engine.edges)
         self.num_agents = config.num_agents
         self.num_tokens = 20
+        self.num_comm_actions = CommVocab.VOCAB_SIZE
         self.max_bodies = config.num_agents
         self.max_messages = 50
         self.max_tasks = config.tasks_per_survivor
@@ -122,6 +125,12 @@ class ObservationBuilder:
         # Tick
         tick = np.array([world.tick], dtype=np.int32)
         
+        # Trust vector (if trust communication is enabled)
+        if self.trust_manager is not None:
+            trust_vector = self.trust_manager.get_trust_vector(agent_id)
+        else:
+            trust_vector = np.full(self.num_agents, 0.5, dtype=np.float32)  # Neutral trust
+        
         # Action mask
         action_mask = self._build_action_mask(world, agent_id)
         
@@ -144,6 +153,7 @@ class ObservationBuilder:
             "knows_role_of": knows_role_of,
             "known_role": known_role,
             "tick": tick,
+            "trust_vector": trust_vector,
             "action_mask": action_mask,
         }
     
@@ -204,6 +214,11 @@ class ObservationBuilder:
             # SEND_TOKEN: all alive agents can send messages
             for token_id in range(self.num_tokens):
                 mask[engine.offset_token + token_id] = 1
+            
+            # COMM_ACTION: trust-based communication (if enabled)
+            if self.config.enable_trust_comm:
+                for comm_id in range(self.num_comm_actions):
+                    mask[engine.offset_comm + comm_id] = 1
         
         elif world.phase == Phase.VOTING:
             # MOVE: can still move during voting
@@ -220,6 +235,11 @@ class ObservationBuilder:
             # Can also send messages during voting
             for token_id in range(self.num_tokens):
                 mask[engine.offset_token + token_id] = 1
+            
+            # COMM_ACTION: trust-based communication (if enabled)
+            if self.config.enable_trust_comm:
+                for comm_id in range(self.num_comm_actions):
+                    mask[engine.offset_comm + comm_id] = 1
         
         # Ensure at least one action is valid
         if mask.sum() == 0:

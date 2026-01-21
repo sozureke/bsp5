@@ -21,6 +21,16 @@ env:
   comm_mode: broadcast
   memory_mode: none
   suspicion_delay_ticks: 30
+  
+  enable_trust_comm: true          # Enable discrete communication actions (SUPPORT, ACCUSE, etc.)
+  trust_delay_ticks: 5              # Delay before trust updates take effect
+  trust_initial_value: 0.5          # Initial trust between agents [0, 1]
+  trust_support_delta: 0.15         # Trust increase from SUPPORT action
+  trust_accuse_delta: -0.20         # Trust decrease from ACCUSE action (negative)
+  trust_defend_delta: 0.05          # Trust increase from DEFEND_SELF
+  trust_question_delta: -0.08       # Trust decrease from QUESTION (negative)
+  trust_voting_weight: 0.3          # Weight of trust in voting (0=no effect, 1=full effect)
+  voting_confidence_threshold: 0.4  # Minimum voting score to eject [0, 1] - forces evidence accumulation
 
 rewards:  
   survivor:
@@ -65,7 +75,7 @@ training:
     use_lstm: false
     lstm_cell_size: 256
     max_seq_len: 20
-  total_timesteps: 3000000
+  total_timesteps: 1000000
   checkpoint_timesteps: 1000000
   evaluation_interval: 25
   evaluation_num_episodes: 10
