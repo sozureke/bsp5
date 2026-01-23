@@ -1,5 +1,3 @@
-"""JSONL event logger for tick-level events."""
-
 from __future__ import annotations
 
 import json
@@ -28,7 +26,7 @@ class EventWriter:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 path = f"events_{timestamp}.jsonl"
             else:
-                path = "events.jsonl"
+                path =  "events.jsonl"
         
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -38,7 +36,7 @@ class EventWriter:
     def _ensure_open(self) -> TextIO:
         """Ensure file is open for writing."""
         if self._file is None:
-            self._file = open(self.path, "a")
+            self._file = open(self.path,  "a")
         return self._file
     
     @staticmethod
@@ -59,9 +57,9 @@ class EventWriter:
         """Write an event to the log."""
         f = self._ensure_open()
         event_dict = event.to_dict()
-        # Convert NumPy types to native Python types for JSON serialization
+
         serializable_dict = self._convert_to_json_serializable(event_dict)
-        f.write(json.dumps(serializable_dict) + "\n")
+        f.write(json.dumps(serializable_dict) +  "\n")
         self._event_count += 1
     
     def write_many(self, events: list[Event]) -> None:
@@ -80,7 +78,7 @@ class EventWriter:
             self._file.close()
             self._file = None
     
-    def __enter__(self) -> "EventWriter":
+    def __enter__(self) ->  "EventWriter":
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -107,7 +105,7 @@ class EventReader:
     def read_all(self) -> list[dict]:
         """Read all events from the file."""
         events = []
-        with open(self.path, "r") as f:
+        with open(self.path,  "r") as f:
             for line in f:
                 line = line.strip()
                 if line:
@@ -116,7 +114,7 @@ class EventReader:
     
     def iterate(self):
         """Iterate over events lazily."""
-        with open(self.path, "r") as f:
+        with open(self.path,  "r") as f:
             for line in f:
                 line = line.strip()
                 if line:

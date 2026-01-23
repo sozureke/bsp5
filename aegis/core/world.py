@@ -24,18 +24,18 @@ class Role(IntEnum):
 
 class TaskType(IntEnum):
     """Task type enum."""
-    SINGLE_POINT = 0  # Stand in target room for T_task ticks
-    TWO_STEP = 1      # Visit room A then room B sequentially
+    SINGLE_POINT = 0
+    TWO_STEP = 1
 
 
 @dataclass
 class TaskState:
     """State of a single task assigned to an agent."""
     task_type: TaskType
-    rooms: list[int]           # [room] for single_point, [room_a, room_b] for two_step
-    ticks_required: list[int]  # ticks needed per step
-    current_step: int = 0      # 0 or 1 for two_step
-    progress: int = 0          # ticks spent on current step
+    rooms: list[int]
+    ticks_required: list[int]
+    current_step: int = 0
+    progress: int = 0
     completed: bool = False
     
     def total_steps(self) -> int:
@@ -58,8 +58,8 @@ class TaskState:
 @dataclass
 class DoorState:
     """State of a door (edge) in the map."""
-    edge: tuple[int, int]  # (room_a, room_b) sorted
-    closed_timer: int = 0  # ticks remaining until reopens; 0 = open
+    edge: tuple[int, int]
+    closed_timer: int = 0
     
     @property
     def is_open(self) -> bool:
@@ -84,21 +84,21 @@ class AgentState:
     kill_cooldown: int = 0
     door_cooldown: int = 0
     tasks: list[TaskState] = field(default_factory=list)
-    target_room: Optional[int] = None  # current movement target
-    path: list[int] = field(default_factory=list)  # A* path to target
+    target_room: Optional[int] = None
+    path: list[int] = field(default_factory=list)
     
-    # Meeting/voting state
+
     has_voted: bool = False
-    vote_target: Optional[int] = None  # agent_id or -1 for skip
+    vote_target: Optional[int] = None
     
-    # Knower modifier: knows another agent's role
+
     knows_role_of: Optional[int] = None
     
-    # Memory events (for aggregated memory mode)
+
     memory_events: list[dict] = field(default_factory=list)
     
-    # Proximity tracking for reward shaping
-    proximity_to_impostor_ticks: int = 0  # consecutive ticks near impostor
+
+    proximity_to_impostor_ticks: int = 0
     
     def completed_task_steps(self) -> int:
         """Return total completed task steps."""
@@ -121,11 +121,11 @@ class MeetingState:
     reporter_id: int
     body_location: int
     body_agent_id: int
-    tick_start: int  # Tick when meeting started (for logging and analysis)
-    phase_timer: int = 0  # ticks elapsed in current meeting phase
-    messages: list[tuple[int, int, int]] = field(default_factory=list)  # (tick, sender_id, token_id)
-    votes: dict[int, Optional[int]] = field(default_factory=dict)  # voter_id -> target_id or None (skip)
-    comm_actions: list[tuple[int, int, int]] = field(default_factory=list)  # (tick, sender_id, action_id) for trust-based comm
+    tick_start: int
+    phase_timer: int = 0
+    messages: list[tuple[int, int, int]] = field(default_factory=list)
+    votes: dict[int, Optional[int]] = field(default_factory=dict)
+    comm_actions: list[tuple[int, int, int]] = field(default_factory=list)
 
 
 @dataclass
@@ -133,24 +133,24 @@ class WorldState:
     """Complete world state for one tick."""
     tick: int
     phase: Phase
-    agents: dict[int, AgentState]  # agent_id -> AgentState
+    agents: dict[int, AgentState]
     bodies: list[BodyState]
-    doors: dict[tuple[int, int], DoorState]  # sorted edge -> DoorState
+    doors: dict[tuple[int, int], DoorState]
     meeting: Optional[MeetingState] = None
     
-    # Map structure (set once at init, not mutated)
-    rooms: list[int] = field(default_factory=list)  # list of room ids
-    edges: list[tuple[int, int]] = field(default_factory=list)  # list of (room_a, room_b)
+
+    rooms: list[int] = field(default_factory=list)
+    edges: list[tuple[int, int]] = field(default_factory=list)
     evac_room: int = 0
     
-    # Win tracking
+
     evac_active: bool = False
-    evac_tick_counter: int = 0  # consecutive ticks with >=2 survivors in evac
+    evac_tick_counter: int = 0
     winner: Optional[Role] = None
     terminated: bool = False
     truncated: bool = False
     
-    # Config reference (for convenience)
+
     config: Optional["GameConfig"] = None
     
     def alive_agents(self) -> list[AgentState]:
@@ -182,7 +182,7 @@ class WorldState:
         """Check if all survivor tasks are complete."""
         return self.team_task_progress() >= self.total_task_steps()
     
-    def copy(self) -> "WorldState":
+    def copy(self) ->  "WorldState":
         """Return a deep copy of this state."""
         return copy.deepcopy(self)
 

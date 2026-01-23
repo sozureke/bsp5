@@ -13,7 +13,7 @@ def analyze_comm_actions(log_path: str):
     
     reader = EventReader(log_path)
     
-    # Get all communication action events
+
     comm_events = reader.filter_by_type("comm_action")
     
     if not comm_events:
@@ -23,7 +23,7 @@ def analyze_comm_actions(log_path: str):
     
     print(f"\nFound {len(comm_events)} communication actions\n")
     
-    # 1. Action type distribution
+
     print("1. Action Type Distribution")
     print("-" * 70)
     action_counts = Counter(e["action_name"] for e in comm_events)
@@ -31,14 +31,14 @@ def analyze_comm_actions(log_path: str):
         percentage = (count / len(comm_events)) * 100
         print(f"  {action_name:20s}: {count:4d} ({percentage:5.1f}%)")
     
-    # 2. Per-agent usage
+
     print("\n2. Communication by Agent")
     print("-" * 70)
     agent_counts = Counter(e["sender_id"] for e in comm_events)
     for agent_id, count in sorted(agent_counts.items()):
         print(f"  Agent {agent_id}: {count:4d} actions")
     
-    # 3. Temporal distribution
+
     print("\n3. Temporal Distribution")
     print("-" * 70)
     ticks = [e["tick"] for e in comm_events]
@@ -48,7 +48,7 @@ def analyze_comm_actions(log_path: str):
         print(f"  Last action:  tick {max_tick}")
         print(f"  Duration:     {max_tick - min_tick} ticks")
         
-        # Distribution by game phase (rough)
+
         early = sum(1 for t in ticks if t < max_tick / 3)
         mid = sum(1 for t in ticks if max_tick / 3 <= t < 2 * max_tick / 3)
         late = sum(1 for t in ticks if t >= 2 * max_tick / 3)
@@ -56,16 +56,16 @@ def analyze_comm_actions(log_path: str):
         print(f"  Mid game:   {mid} ({(mid/len(ticks))*100:.1f}%)")
         print(f"  Late game:  {late} ({(late/len(ticks))*100:.1f}%)")
     
-    # 4. Target analysis (who gets accused/supported?)
+
     print("\n4. Target Analysis")
     print("-" * 70)
     
-    # Parse target from action_name
+
     targets = defaultdict(lambda: {"support": 0, "accuse": 0, "question": 0})
     for event in comm_events:
         action_name = event["action_name"]
         
-        # Extract target ID from action name
+
         if "SUPPORT(" in action_name or "ACCUSE(" in action_name or "QUESTION(" in action_name:
             try:
                 target_id = int(action_name.split("(")[1].split(")")[0])
@@ -87,18 +87,18 @@ def analyze_comm_actions(log_path: str):
               f"QUESTION={counts['question']} "
               f"(total={total})")
     
-    # 5. Action sequences
+
     print("\n5. Action Patterns")
     print("-" * 70)
     
-    # Find sequences of actions by the same agent
+
     agent_sequences = defaultdict(list)
     for event in sorted(comm_events, key=lambda e: e["tick"]):
         agent_id = event["sender_id"]
         action_type = event["action_name"].split("(")[0]
         agent_sequences[agent_id].append(action_type)
     
-    # Look for common patterns (e.g., ACCUSE followed by ACCUSE)
+
     patterns = Counter()
     for agent_id, actions in agent_sequences.items():
         for i in range(len(actions) - 1):
@@ -159,7 +159,7 @@ def compare_logs(log_paths: list[str]):
               f"{stats['defend_pct']:>7.1f}% "
               f"{stats['question_pct']:>7.1f}%")
     
-    # Compute averages
+
     if len(all_stats) > 1:
         print("-" * 70)
         avg_total = sum(s["total"] for s in all_stats) / len(all_stats)

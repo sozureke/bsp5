@@ -32,10 +32,10 @@ class HeuristicSurvivorPolicy:
         self.num_agents = num_agents
         self.rng = np.random.default_rng(seed)
         
-        # Compute action offsets (same as engine)
+
         n_rooms = num_rooms
         n_agents = num_agents
-        n_doors = 12  # Approximate for 3x3 grid
+        n_doors = 12
         n_tokens = 20
         
         self.offset_move = 0
@@ -69,29 +69,29 @@ class HeuristicSurvivorPolicy:
         visible_bodies = observation.get("visible_bodies", np.zeros((self.num_agents, 3)))
         meeting_messages = observation.get("meeting_messages", np.full((50, 2), -1))
         
-        # Phase 0: Free play
+
         if phase == 0:
-            # Check for bodies in current room -> report
+
             report_action = self.offset_report
             if action_mask[report_action] > 0:
                 return report_action
             
-            # Check if we should work on current task
-            if task_state[0] >= 0:  # Has current task
+
+            if task_state[0] >= 0:
                 target_room = task_state[4]
                 if target_room >= 0 and target_room < self.num_rooms:
                     if self_room == target_room:
-                        # At task location, try to work
+
                         work_action = self.offset_work
                         if action_mask[work_action] > 0:
                             return work_action
                     else:
-                        # Move toward task
+
                         move_action = self.offset_move + target_room
                         if action_mask[move_action] > 0:
                             return move_action
             
-            # If evac active and no tasks, go to evac
+
             if evac_active:
                 evac_room = self.config.evac_room
                 if self_room != evac_room:
@@ -99,35 +99,35 @@ class HeuristicSurvivorPolicy:
                     if action_mask[move_action] > 0:
                         return move_action
             
-            # Default: random valid move
+
             return self._random_valid_action(action_mask)
         
-        # Phase 1: Meeting - send relevant messages
+
         elif phase == 1:
-            # Occasionally send a message
+
             if self.rng.random() < 0.3:
-                # Report where we were
+
                 token = TokenVocab.make_i_was_in_room(self_room % 3)
                 token_action = self.offset_token + token
                 if action_mask[token_action] > 0:
                     return token_action
             
-            # Random valid action (usually just move around)
+
             return self._random_valid_action(action_mask)
         
-        # Phase 2: Voting
+
         elif phase == 2:
-            # Analyze accusations from messages
+
             accusations = self._count_accusations(meeting_messages)
             
-            # Vote for most accused if any
+
             if accusations:
                 most_accused = max(accusations, key=accusations.get)
                 vote_action = self.offset_vote + most_accused
                 if action_mask[vote_action] > 0:
                     return vote_action
             
-            # Otherwise skip
+
             if action_mask[self.offset_vote_skip] > 0:
                 return self.offset_vote_skip
             

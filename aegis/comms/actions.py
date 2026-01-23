@@ -9,30 +9,30 @@ from typing import Optional
 class CommAction(IntEnum):
     """Discrete communication actions for agent interaction."""
     NO_OP = 0
-    SUPPORT_0 = 1      # SUPPORT(agent_0)
-    SUPPORT_1 = 2      # SUPPORT(agent_1)
-    SUPPORT_2 = 3      # SUPPORT(agent_2)
-    SUPPORT_3 = 4      # SUPPORT(agent_3)
-    SUPPORT_4 = 5      # SUPPORT(agent_4)
-    ACCUSE_0 = 6       # ACCUSE(agent_0)
-    ACCUSE_1 = 7       # ACCUSE(agent_1)
-    ACCUSE_2 = 8       # ACCUSE(agent_2)
-    ACCUSE_3 = 9       # ACCUSE(agent_3)
-    ACCUSE_4 = 10      # ACCUSE(agent_4)
-    DEFEND_SELF = 11   # DEFEND_SELF
-    QUESTION_0 = 12    # QUESTION(agent_0)
-    QUESTION_1 = 13    # QUESTION(agent_1)
-    QUESTION_2 = 14    # QUESTION(agent_2)
-    QUESTION_3 = 15    # QUESTION(agent_3)
-    QUESTION_4 = 16    # QUESTION(agent_4)
+    SUPPORT_0 = 1
+    SUPPORT_1 = 2
+    SUPPORT_2 = 3
+    SUPPORT_3 = 4
+    SUPPORT_4 = 5
+    ACCUSE_0 = 6
+    ACCUSE_1 = 7
+    ACCUSE_2 = 8
+    ACCUSE_3 = 9
+    ACCUSE_4 = 10
+    DEFEND_SELF = 11
+    QUESTION_0 = 12
+    QUESTION_1 = 13
+    QUESTION_2 = 14
+    QUESTION_3 = 15
+    QUESTION_4 = 16
 
 
 class CommVocab:
     """Communication vocabulary helper class."""
     
-    VOCAB_SIZE = 17  # 1 NO_OP + 5 SUPPORT + 5 ACCUSE + 1 DEFEND + 5 QUESTION
+    VOCAB_SIZE = 17
     
-    # Action ranges
+
     NO_OP = 0
     SUPPORT_BASE = 1
     SUPPORT_END = 6

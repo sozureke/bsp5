@@ -1,5 +1,3 @@
-"""Message routing for broadcast vs local communication."""
-
 from __future__ import annotations
 
 from typing import Optional
@@ -14,13 +12,13 @@ class Message:
     tick: int
     sender_id: int
     token_id: int
-    recipients: list[int] = field(default_factory=list)  # Empty = broadcast
+    recipients: list[int] = field(default_factory=list)
 
 
 class MessageRouter:
     """Routes messages between agents during meetings."""
     
-    def __init__(self, mode: str = "broadcast", bandwidth_cap: int = 10):
+    def __init__(self, mode: str =  "broadcast", bandwidth_cap: int = 10):
         """
         Initialize message router.
         
@@ -30,7 +28,7 @@ class MessageRouter:
         """
         self.mode = mode
         self.bandwidth_cap = bandwidth_cap
-        self._message_counts: dict[int, int] = {}  # agent_id -> count this meeting
+        self._message_counts: dict[int, int] = {}
     
     def reset(self) -> None:
         """Reset for new meeting."""
@@ -58,21 +56,17 @@ class MessageRouter:
         if not sender.alive:
             return None
         
-        # Determine recipients
-        if self.mode == "broadcast":
-            # All alive agents receive
+        if self.mode ==  "broadcast":
             recipients = [
                 a.agent_id for a in world.alive_agents()
                 if a.agent_id != sender_id
             ]
         else:
-            # Local mode: only agents in same room
             recipients = [
                 a.agent_id for a in world.alive_agents()
                 if a.agent_id != sender_id and a.room == sender.room
             ]
         
-        # Increment count
         self._message_counts[sender_id] = self._message_counts.get(sender_id, 0) + 1
         
         return Message(

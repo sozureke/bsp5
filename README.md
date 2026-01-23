@@ -1,6 +1,6 @@
 # AEGIS: Multi-Agent RL for Communication-Deduction Games
 
-A production-quality multi-agent reinforcement learning project implementing a communication-deduction game inspired by Among Us. Features PettingZoo + Gymnasium environments, NetworkX-based pathfinding, and Ray RLlib (PPO) training.
+A production-quality multi-agent reinforcement learning project implementing a communication-deduction game. Features PettingZoo + Gymnasium environments, NetworkX-based pathfinding, and CleanRL PPO training.
 
 ## Features
 
@@ -23,48 +23,16 @@ cd aegis
 pip install -e .
 
 # Or install dependencies directly
-pip install gymnasium pettingzoo supersuit networkx "ray[rllib]" torch numpy pyyaml wandb pytest
+pip install gymnasium pettingzoo supersuit networkx torch numpy pyyaml
 ```
 
 ## Quick Start
 
-### Run Episodes with Heuristic Agents
+### Train with CleanRL PPO
 
 ```bash
-# Run 5 episodes with text rendering
-python -m aegis.scripts.play_heuristic --episodes 5 --render
-
-# Run 100 episodes silently for statistics
-python -m aegis.scripts.play_heuristic --episodes 100
-
-# Custom configuration
-python -m aegis.scripts.play_heuristic --episodes 10 --survivors 4 --impostors 2 --vision 1
-```
-
-### Train with RLlib PPO
-
-```bash
-# Basic training
-python -m aegis.train.rllib_ppo --iterations 100
-
 # Training with config file
-python -m aegis.train.rllib_ppo --config aegis/train/configs/base.yaml --iterations 1000
-
-# With Weights & Biases logging
-python -m aegis.train.rllib_ppo --config aegis/train/configs/base.yaml --wandb
-```
-
-### Run Tests
-
-```bash
-# Run all tests
-pytest aegis/tests/ -v
-
-# Run specific test file
-pytest aegis/tests/test_core_rules.py -v
-
-# Run with coverage
-pytest aegis/tests/ --cov=aegis
+python -m aegis.train.rl_ppo -c aegis/train/configs/main.config.yaml
 ```
 
 ## Project Structure
@@ -86,23 +54,17 @@ aegis/
 │   ├── pettingzoo_env.py  # PettingZoo ParallelEnv wrapper
 │   └── wrappers.py        # SuperSuit wrappers
 ├── agents/
-│   ├── random_policy.py        # Random baseline
-│   ├── heuristic_survivor.py   # Rule-based survivor
-│   └── heuristic_impostor.py   # Rule-based impostor
+│   └── random_policy.py        # Random baseline
 ├── train/
-│   ├── rllib_ppo.py       # RLlib training script
+│   ├── rl_ppo.py          # CleanRL PPO training script
 │   └── configs/
-│       └── base.yaml      # Default configuration
+│       └── main.config.yaml  # Main experiment configuration
 ├── logging/
 │   ├── metrics.py         # Episode metrics
 │   └── event_writer.py    # JSONL event logger
-├── tests/
-│   ├── test_core_rules.py     # Win condition tests
-│   ├── test_meeting_vote.py   # Meeting/voting tests
-│   └── test_vision_mask.py    # Vision and action mask tests
 └── scripts/
-    ├── play_heuristic.py      # Run with heuristics
-    └── aggregate_metrics.py   # Process event logs
+    ├── analyze_events.py      # Analyze events.jsonl
+    └── evaluate_ppo.py        # Evaluate trained models
 ```
 
 ## Game Rules
@@ -237,11 +199,14 @@ During meetings, agents can use 5 types of actions:
 Communication actions are logged to JSONL event streams:
 
 ```bash
-# Analyze communication patterns from logs
-python aegis/scripts/analyze_comm_logs.py events.jsonl
+# Analyze communication patterns and meetings from logs
+python -m aegis.scripts.analyze_events checkpoints/experiment_name/events.jsonl --summary
 
-# Compare patterns across multiple episodes
-python aegis/scripts/analyze_comm_logs.py --compare events1.jsonl events2.jsonl
+# Find interesting meetings with coordination
+python -m aegis.scripts.analyze_events checkpoints/experiment_name/events.jsonl --find-interesting
+
+# Analyze impostor strategies
+python -m aegis.scripts.analyze_events checkpoints/experiment_name/events.jsonl --impostor-strategies
 ```
 
 Example event structure:
@@ -274,22 +239,12 @@ trust_voting_weight: 0.3          # Weight in voting (0=off, 1=full)
 
 - **none**: Observation only, no memory
 - **aggregated**: Last-seen tracking in observation
-- **recurrent**: Use RLlib's LSTM model
-
-## Development
-
-```bash
-# Format code
-black aegis/
-
-# Lint
-ruff check aegis/
-
-# Type check (optional)
-mypy aegis/
-```
+- **recurrent**: Use LSTM model (if implemented)
 
 ## License
 
 MIT License
+
+## Author
+Marshanishvili Mykhailo
 

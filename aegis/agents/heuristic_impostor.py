@@ -33,7 +33,7 @@ class HeuristicImpostorPolicy:
         self.num_agents = num_agents
         self.rng = np.random.default_rng(seed)
         
-        # Compute action offsets
+
         n_rooms = num_rooms
         n_agents = num_agents
         n_doors = 12
@@ -70,11 +70,11 @@ class HeuristicImpostorPolicy:
         door_cooldown = observation.get("door_cooldown", np.array([1.0]))
         meeting_messages = observation.get("meeting_messages", np.full((50, 2), -1))
         
-        # Phase 0: Free play
+
         if phase == 0:
-            # Check for kill opportunity
+
             if kill_cooldown[0] == 0:
-                # Find survivors in same room
+
                 targets_in_room = []
                 for agent_id in range(self.num_agents):
                     seen, room, alive = visible_agents[agent_id]
@@ -83,18 +83,18 @@ class HeuristicImpostorPolicy:
                         if action_mask[kill_action] > 0:
                             targets_in_room.append(agent_id)
                 
-                # Check if isolated (only us and one other agent visible in room)
+
                 visible_in_room = sum(
                     1 for i in range(self.num_agents)
                     if visible_agents[i, 0] and visible_agents[i, 1] == self_room
                 )
                 
                 if targets_in_room and visible_in_room <= 2:
-                    # Good kill opportunity
+
                     target = self.rng.choice(targets_in_room)
                     return self.offset_kill + target
             
-            # Occasionally close a door (10% chance)
+
             if door_cooldown[0] == 0 and self.rng.random() < 0.1:
                 close_actions = [
                     a for a in range(self.offset_close, self.offset_token)
@@ -103,7 +103,7 @@ class HeuristicImpostorPolicy:
                 if close_actions:
                     return int(self.rng.choice(close_actions))
             
-            # Roam: move to a random room
+
             if self.rng.random() < 0.5:
                 move_actions = [
                     a for a in range(self.offset_move, self.offset_work)
@@ -114,11 +114,11 @@ class HeuristicImpostorPolicy:
             
             return self._random_valid_action(action_mask)
         
-        # Phase 1: Meeting
+
         elif phase == 1:
-            # Send accusation against a random survivor (30% chance)
+
             if self.rng.random() < 0.3:
-                # Accuse a random agent
+
                 target = int(self.rng.integers(0, self.num_agents))
                 token = TokenVocab.make_suspect(target)
                 token_action = self.offset_token + token
@@ -127,19 +127,19 @@ class HeuristicImpostorPolicy:
             
             return self._random_valid_action(action_mask)
         
-        # Phase 2: Voting
+
         elif phase == 2:
-            # Try to vote for someone being accused (preferably survivors)
+
             accusations = self._count_accusations(meeting_messages)
             
             if accusations:
-                # Vote for most accused
+
                 most_accused = max(accusations, key=accusations.get)
                 vote_action = self.offset_vote + most_accused
                 if action_mask[vote_action] > 0:
                     return vote_action
             
-            # Random vote for anyone alive
+
             vote_actions = [
                 a for a in range(self.offset_vote, self.offset_vote_skip)
                 if action_mask[a] > 0
@@ -147,7 +147,7 @@ class HeuristicImpostorPolicy:
             if vote_actions:
                 return int(self.rng.choice(vote_actions))
             
-            # Skip
+
             if action_mask[self.offset_vote_skip] > 0:
                 return self.offset_vote_skip
             

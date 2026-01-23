@@ -37,11 +37,11 @@ def make_env(
     )
     
     if apply_wrappers:
-        # Pad observations to ensure consistent shapes
-        # This is mainly for compatibility with batch processing
+
+
         env = ss.pad_observations_v0(env)
         
-        # Pad action spaces (not typically needed for Discrete but good practice)
+
         env = ss.pad_action_space_v0(env)
     
     return env
@@ -66,7 +66,7 @@ def make_vec_env(
     def env_fn():
         return make_env(config=config, **kwargs)
     
-    # Use SuperSuit's vectorization
+
     env = env_fn()
     env = ss.pettingzoo_env_to_vec_env_v1(env)
     env = ss.concat_vec_envs_v1(env, num_envs, num_cpus=1, base_class="gymnasium")

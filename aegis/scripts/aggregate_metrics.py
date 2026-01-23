@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 """Aggregate metrics from JSONL event logs into CSV."""
 
 from __future__ import annotations
@@ -77,7 +77,7 @@ def main():
     
     args = parser.parse_args()
     
-    # Collect input files
+
     input_files = []
     for path in args.input:
         p = Path(path)
@@ -92,7 +92,7 @@ def main():
     
     print(f"Processing {len(input_files)} files...")
     
-    # Process all files
+
     all_metrics = []
     for file_path in input_files:
         try:
@@ -105,7 +105,7 @@ def main():
         print("No metrics extracted")
         return
     
-    # Write CSV
+
     fieldnames = list(all_metrics[0].keys())
     
     with open(args.output, "w", newline="") as f:
@@ -115,7 +115,7 @@ def main():
     
     print(f"Wrote {len(all_metrics)} records to {args.output}")
     
-    # Print summary
+
     survivor_wins = sum(1 for m in all_metrics if m["winner"] == 0)
     impostor_wins = sum(1 for m in all_metrics if m["winner"] == 1)
     total = len(all_metrics)

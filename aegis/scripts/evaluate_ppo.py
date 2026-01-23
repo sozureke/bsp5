@@ -20,11 +20,11 @@ def evaluate(
     render: bool = False,
     delay: float = 0.0,
     seed: Optional[int] = None,
-    device: str = "cpu",
+    device: str =  "cpu",
 ):
     """Evaluate a trained PPO model."""
     
-    # Load args from config or use defaults
+
     if config_path:
         args = Args.from_yaml(config_path)
     else:
@@ -33,7 +33,7 @@ def evaluate(
     if seed is not None:
         args = args.override(seed=seed)
     
-    # Create environment
+
     if args.game_config:
         config = GameConfig(**args.game_config, seed=args.seed)
     else:
@@ -41,11 +41,11 @@ def evaluate(
     
     env = AegisEnv(config=config, render_mode="human" if render else None)
     
-    # Get dimensions
+
     obs_dim = get_flat_obs_dim(env)
     action_dim = get_action_dim(env)
     
-    # Create and load model
+
     agent = ActorCritic(obs_dim, action_dim, args.hidden_dim).to(device)
     
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
@@ -53,11 +53,11 @@ def evaluate(
     agent.eval()
     
     print(f"Loaded checkpoint: {checkpoint_path}")
-    print(f"  Global step: {checkpoint.get('global_step', 'N/A')}")
-    print(f"  Num updates: {checkpoint.get('num_updates', 'N/A')}")
+    print(f"  Global step: {checkpoint.get('global_step',  'N/A')}")
+    print(f"  Num updates: {checkpoint.get('num_updates',  'N/A')}")
     print()
     
-    # Run evaluation
+
     agent_names = env.possible_agents
     survivor_wins = 0
     impostor_wins = 0
@@ -95,13 +95,13 @@ def evaluate(
             mask_tensor = torch.tensor(np.array(masks), dtype=torch.float32, device=device)
             roles_tensor = torch.tensor(np.array(roles), dtype=torch.long, device=device)
             
-            # Get actions (deterministic for evaluation)
+
             with torch.no_grad():
                 actions, _, _, _ = agent.get_action_and_value(obs_tensor, mask_tensor, roles_tensor)
             
             actions_dict = {name: actions[i].item() for i, name in enumerate(agent_names)}
             
-            # Step
+
             obs_dict, rewards, terminations, truncations, infos = env.step(actions_dict)
             episode_reward += sum(rewards.values())
             step_count += 1
@@ -117,7 +117,7 @@ def evaluate(
                 if delay > 0:
                     time.sleep(delay)
         
-        # Determine winner
+
         winner = None
         for info in infos.values():
             if info.get("winner") is not None:
@@ -126,17 +126,17 @@ def evaluate(
         
         if winner == Role.SURVIVOR:
             survivor_wins += 1
-            winner_str = "SURVIVOR"
+            winner_str =  "SURVIVOR"
         else:
             impostor_wins += 1
-            winner_str = "IMPOSTOR"
+            winner_str =  "IMPOSTOR"
         
         all_rewards.append(episode_reward / len(agent_names))
         all_lengths.append(step_count)
         
         print(f"Episode {ep + 1}: {winner_str} wins in {step_count} steps (reward: {episode_reward/len(agent_names):.3f})")
     
-    # Summary
+
     print()
     print("=" * 60)
     print("EVALUATION SUMMARY")
@@ -165,12 +165,12 @@ def evaluate(
 def main():
     parser = argparse.ArgumentParser(description="Evaluate trained PPO model")
     parser.add_argument("checkpoint", type=str, help="Path to checkpoint file")
-    parser.add_argument("-c", "--config", type=str, help="Path to YAML config")
-    parser.add_argument("-n", "--episodes", type=int, default=100, help="Number of episodes")
-    parser.add_argument("-r", "--render", action="store_true", help="Render episodes")
-    parser.add_argument("-d", "--delay", type=float, default=0.0, help="Delay between steps")
+    parser.add_argument("-c",  "--config", type=str, help="Path to YAML config")
+    parser.add_argument("-n",  "--episodes", type=int, default=100, help="Number of episodes")
+    parser.add_argument("-r",  "--render", action="store_true", help="Render episodes")
+    parser.add_argument("-d",  "--delay", type=float, default=0.0, help="Delay between steps")
     parser.add_argument("--seed", type=int, help="Random seed")
-    parser.add_argument("--device", type=str, default="cpu", choices=["cpu", "cuda", "mps"])
+    parser.add_argument("--device", type=str, default="cpu", choices=["cpu",  "cuda",  "mps"])
     
     args = parser.parse_args()
     
@@ -185,6 +185,6 @@ def main():
     )
 
 
-if __name__ == "__main__":
+if __name__ ==  "__main__":
     main()
 

@@ -1,5 +1,3 @@
-"""Episode summary metrics."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
@@ -13,40 +11,40 @@ from aegis.core.world import WorldState, Role
 class EpisodeMetrics:
     """Metrics collected during an episode."""
     
-    # Episode outcome
+
     episode_length: int = 0
-    winner: Optional[int] = None  # 0=Survivor, 1=Impostor
-    win_reason: str = ""
+    winner: Optional[int] = None
+    win_reason: str =  ""
     
-    # Event counts
+
     kills: int = 0
     meetings: int = 0
     ejections: int = 0
     tasks_completed: int = 0
     messages_sent: int = 0
     
-    # Task completion
+
     total_task_steps: int = 0
     completed_task_steps: int = 0
     
-    # Voting accuracy (for analysis)
-    correct_ejections: int = 0  # Impostors ejected
-    wrong_ejections: int = 0     # Survivors ejected
-    failed_votes_low_confidence: int = 0  # Votes that failed due to low confidence
-    max_voting_scores: list[float] = field(default_factory=list)  # Track max score per meeting
+
+    correct_ejections: int = 0
+    wrong_ejections: int = 0
+    failed_votes_low_confidence: int = 0
+    max_voting_scores: list[float] = field(default_factory=list)
     
-    # Survivors at end
+
     survivors_alive: int = 0
     impostors_alive: int = 0
     
-    # Communication actions (trust-based)
+
     comm_support_count: int = 0
     comm_accuse_count: int = 0
     comm_defend_count: int = 0
     comm_question_count: int = 0
     comm_noop_count: int = 0
     
-    # Trust statistics
+
     trust_support_avg_delta: float = 0.0
     trust_accuse_avg_delta: float = 0.0
     trust_defend_avg_delta: float = 0.0
@@ -57,15 +55,15 @@ class EpisodeMetrics:
         self.episode_length = world.tick
         self.winner = world.winner
         
-        # Count survivors
+
         self.survivors_alive = len(world.alive_survivors())
         self.impostors_alive = len(world.alive_impostors())
         
-        # Task stats
+
         self.total_task_steps = world.total_task_steps()
         self.completed_task_steps = world.team_task_progress()
         
-        # Trust statistics (if trust manager is provided)
+
         if trust_manager is not None:
             trust_stats = trust_manager.get_statistics()
             self.comm_support_count = trust_stats.get("support_count", 0)
@@ -86,7 +84,7 @@ class EpisodeMetrics:
         return json.dumps(self.to_dict())
     
     @classmethod
-    def from_dict(cls, data: dict) -> "EpisodeMetrics":
+    def from_dict(cls, data: dict) ->  "EpisodeMetrics":
         """Create from dictionary."""
         return cls(**data)
 
@@ -136,7 +134,7 @@ class MetricsAggregator:
         
         fieldnames = list(self.episodes[0].to_dict().keys())
         
-        with open(path, "w", newline="") as f:
+        with open(path,  "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             for m in self.episodes:

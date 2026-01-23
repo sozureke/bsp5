@@ -24,7 +24,7 @@ from aegis.comms.actions import CommVocab
 class SuspectEvent:
     """Represents a suspicious event that may become active after delay."""
     target_agent: int
-    event_type: str  # "witness_kill", "near_body", "suspicious_proximity"
+    event_type: str
     tick_created: int
     suspicion_value: float
 
@@ -36,7 +36,7 @@ class AegisEnv(ParallelEnv):
     All agents act simultaneously each tick.
     """
     
-    metadata = {"render_modes": ["human", "ansi"], "name": "aegis_v0"}
+    metadata = {"render_modes": ["human",  "ansi"],  "name":  "aegis_v0"}
     
     def __init__(
         self,
@@ -51,12 +51,10 @@ class AegisEnv(ParallelEnv):
         self.config = config or GameConfig()
         self.render_mode = render_mode
         self.log_events = log_events
-        self.log_event_types = set(log_event_types) if log_event_types else None  # None = log all, set for fast lookup
+        self.log_event_types = set(log_event_types) if log_event_types else None
         
-        # Initialize engine
         self.engine = StepEngine(self.config)
         
-        # Trust-based communication system (initialize before obs_builder)
         self.trust_manager: Optional[TrustManager] = None
         if self.config.enable_trust_comm:
             self.trust_manager = TrustManager(
@@ -65,47 +63,34 @@ class AegisEnv(ParallelEnv):
                 initial_trust=self.config.trust_initial_value,
             )
         
-        # Initialize observation builder
         self.obs_builder = ObservationBuilder(self.engine, self.config, trust_manager=self.trust_manager)
         
-        # Initialize observation spaces helper
         self.obs_spaces = ObservationSpaces(
             self.config,
             num_rooms=len(self.engine.rooms),
             num_edges=len(self.engine.edges),
         )
         
-        # Agent IDs
         self.possible_agents = [f"agent_{i}" for i in range(self.config.num_agents)]
         self.agent_name_mapping = {name: i for i, name in enumerate(self.possible_agents)}
         
-        # Event logging
         self.event_writer = EventWriter(log_path) if log_events and log_path else None
         
-        # Episode metrics
         self.metrics = EpisodeMetrics()
         
-        # State
         self.world: Optional[WorldState] = None
         self.agents: list[str] = []
         self._cumulative_rewards: dict[str, float] = {}
         
-        # Diagnostic: Track communication action selection
         self._comm_action_selections: int = 0
         self._total_meeting_steps: int = 0
         
-        # Latent suspicion scores (internal only, not exposed to agents)
-        # Maps agent_id (int) -> suspicion score [0.0, 1.0]
         self.suspicion_score: dict[int, float] = {}
         
-        # Track ticks since last kill for each impostor (for decay)
         self.ticks_since_kill: dict[int, int] = {}
         
-        # Track proximity to other agents (for impostor suspicion)
-        # Maps agent_id -> ticks spent near other agents (consecutive)
         self.proximity_ticks: dict[int, int] = {}
         
-        # Delayed suspicion buffers
         self.pending_suspicions: dict[int, list[SuspectEvent]] = {}
         self.active_suspicions: dict[int, list[SuspectEvent]] = {}
         
@@ -133,47 +118,36 @@ class AegisEnv(ParallelEnv):
         options: Optional[dict] = None,
     ) -> tuple[dict[str, dict], dict[str, dict]]:
         """Reset the environment."""
-        # Reset engine with seed
         actual_seed = seed if seed is not None else self.config.seed
         self.world, init_events = self.engine.create_initial_state(actual_seed)
         
-        # Reset agent list (all agents alive)
         self.agents = list(self.possible_agents)
         
-        # Reset cumulative rewards
         self._cumulative_rewards = {agent: 0.0 for agent in self.agents}
         
-        # Reset diagnostic counters
         self._comm_action_selections = 0
         self._total_meeting_steps = 0
         
-        # Reset metrics
         self.metrics = EpisodeMetrics()
         
-        # Reset suspicion scores (all start at 0.0)
         self.suspicion_score = {i: 0.0 for i in range(self.config.num_agents)}
         
-        # Reset kill tracking
         self.ticks_since_kill = {i: 0 for i in range(self.config.num_agents)}
         
-        # Reset proximity tracking
         self.proximity_ticks = {i: 0 for i in range(self.config.num_agents)}
         
-        # Reset suspicion buffers
         self.pending_suspicions = {i: [] for i in range(self.config.num_agents)}
         self.active_suspicions = {i: [] for i in range(self.config.num_agents)}
         
-        # Reset trust manager
         if self.trust_manager is not None:
             self.trust_manager.reset(initial_trust=self.config.trust_initial_value)
         
-        # Log initial events (with filtering)
         if self.event_writer:
             for event in init_events:
                 if self._should_log_event(event):
                     self.event_writer.write(event)
         
-        # Build observations
+
         observations = {}
         infos = {}
         for agent_name in self.agents:
@@ -187,11 +161,11 @@ class AegisEnv(ParallelEnv):
         self,
         actions: dict[str, int],
     ) -> tuple[
-        dict[str, dict],  # observations
-        dict[str, float],  # rewards
-        dict[str, bool],  # terminations
-        dict[str, bool],  # truncations
-        dict[str, dict],  # infos
+        dict[str, dict],
+        dict[str, float],
+        dict[str, bool],
+        dict[str, bool],
+        dict[str, dict],
     ]:
         """Execute one step with joint actions."""
         if self.world is None:
@@ -216,25 +190,17 @@ class AegisEnv(ParallelEnv):
                 if agent_name in self.agents:
                     agent_id = self._name_to_agent_id(agent_name)
                     action_type, param = self.engine.parse_action(action)
-                    if action_type == "comm_action":
+                    if action_type ==  "comm_action":
                         self._comm_action_selections += 1
         
-        # Update proximity tracking before step
-        self._update_proximity_tracking(old_world)
-        
-        # Activate delayed suspicions (move from pending to active and update scores)
-        self._activate_delayed_suspicions(self.world.tick)
-        
-        # Apply temporal decay to suspicion scores
+        self._update_proximity_tracking(old_world)        
+        self._activate_delayed_suspicions(self.world.tick)        
         self._decay_suspicion(old_world)
         
-        # Process trust-based communication actions
         if self.trust_manager is not None and self.world.meeting is not None:
             self._process_comm_actions(self.world, joint_actions)
-            # Activate delayed trust updates
             self.trust_manager.activate_delayed_updates(self.world.tick)
         
-        # Step the engine (voting resolution will use suspicion scores combined with trust)
         suspicion_scores = self._compute_voting_scores()
         next_world, events = self.engine.step(self.world, joint_actions, suspicion_scores=suspicion_scores)
         
@@ -243,10 +209,8 @@ class AegisEnv(ParallelEnv):
                 if self._should_log_event(event):
                     self.event_writer.write(event)
         
-        # Update suspicion scores from events (after step, before rewards)
         self._update_suspicion_from_events(events, old_world, next_world)
         
-        # Clear pending suspicions and trust updates after meeting ends
         for event in events:
             if event.event_type == EventType.MEETING_END:
                 for agent_id in range(self.config.num_agents):
@@ -281,11 +245,10 @@ class AegisEnv(ParallelEnv):
             
             agent_event_info = agent_events.get(agent_name, {})
             
-            # Contract: role and winner are always int (0 or 1) or None for winner
             infos[agent_name] = {
                 "role": int(agent.role),
                 "alive": agent.alive,
-                "winner": authoritative_winner,  # int or None, never Role enum
+                "winner": authoritative_winner,
                 "events": agent_event_info.get("events", []),
                 "did_kill": agent_event_info.get("did_kill", False),
                 "did_task_step": agent_event_info.get("did_task_step", False),
@@ -299,15 +262,12 @@ class AegisEnv(ParallelEnv):
                 "false_accuse": agent_event_info.get("false_accuse", False),
             }
             
-            # A3: Ensure elimination flags are mutually consistent
-            # If agent became dead, exactly one elimination flag must be True
             was_alive = old_world.agents[agent_id].alive if agent_id in old_world.agents else True
             if not agent.alive and was_alive:
                 was_killed = agent_event_info.get("was_killed", False)
                 was_ejected = agent_event_info.get("was_ejected", False)
                 
                 if agent.role == Role.IMPOSTOR:
-                    # A4: Impostor invariant - can only be ejected, never killed
                     if was_killed:
                         raise RuntimeError(
                             f"Invariant violated: impostor {agent_id} was killed. "
@@ -318,8 +278,7 @@ class AegisEnv(ParallelEnv):
                             f"Invariant violated: impostor {agent_id} died but was_ejected=False. "
                             "Impostors can only leave via ejection."
                         )
-                else:  # SURVIVOR
-                    # Survivor: must have exactly one of was_killed or was_ejected
+                else:
                     if was_killed == was_ejected:
                         raise RuntimeError(
                             f"Invariant violated: survivor {agent_id} died but elimination flags inconsistent. "
@@ -327,7 +286,6 @@ class AegisEnv(ParallelEnv):
                             "Exactly one must be True."
                         )
         
-        # Update world state after all checks
         self.world = next_world
         
         self.agents = [
@@ -358,7 +316,6 @@ class AegisEnv(ParallelEnv):
                 killer_name = self._agent_id_to_name(killer_id)
                 victim_name = self._agent_id_to_name(victim_id)
                 
-                # A4: Invariant check - impostor cannot be killed
                 victim_role = next_world.agents[victim_id].role
                 if victim_role == Role.IMPOSTOR:
                     raise RuntimeError(
@@ -411,23 +368,15 @@ class AegisEnv(ParallelEnv):
                         else:
                             agent_events[name]["ejection_penalized"] = True
                 
-                # Outcome-based communication rewards: track accusations during the meeting
-                # Check which agents accused the ejected agent during the meeting
                 if old_world.meeting is not None:
-                    # Extract accusations from comm_actions during the meeting
-                    # comm_actions format: (tick, sender_id, action_id)
                     for tick, sender_id, action_id in old_world.meeting.comm_actions:
-                        # Check if this is an ACCUSE action targeting the ejected agent
                         accuse_target = CommVocab.get_accuse_target(action_id)
                         if accuse_target == ejected_id:
                             accuser_name = self._agent_id_to_name(sender_id)
                             
-                            # Apply outcome-based reward:
-                            # - If ejected agent is IMPOSTOR: correct accusation (+reward)
-                            # - If ejected agent is SURVIVOR: false accusation (-penalty)
                             if ejected_role == Role.IMPOSTOR:
                                 agent_events[accuser_name]["correct_accuse"] = True
-                            else:  # ejected_role == Role.SURVIVOR
+                            else:
                                 agent_events[accuser_name]["false_accuse"] = True
             
             elif event.event_type == EventType.WIN:
@@ -452,7 +401,7 @@ class AegisEnv(ParallelEnv):
         rewards = {agent: 0.0 for agent in self.possible_agents}
         config = self.config
         
-        # Process events
+
         for event in events:
             if event.event_type == EventType.WIN:
                 winner = Role(event.data["winner"])
@@ -470,7 +419,6 @@ class AegisEnv(ParallelEnv):
                 rewards[killer_name] += config.reward_kill
             
             elif event.event_type == EventType.TASK_STEP_COMPLETE:
-                # Team reward for task progress
                 for agent_name in self.possible_agents:
                     agent_id = self._name_to_agent_id(agent_name)
                     if new_world.agents[agent_id].role == Role.SURVIVOR:
@@ -494,25 +442,22 @@ class AegisEnv(ParallelEnv):
                             rewards[agent_name] += config.reward_survivor_ejected_impostor
                         else:
                             rewards[agent_name] += config.reward_survivor_ejected_survivor
-                    else:  # Impostor
+                    else:
                         if ejected_role == Role.SURVIVOR:
                             rewards[agent_name] += config.reward_impostor_ejected_survivor
                         else:
                             rewards[agent_name] += config.reward_impostor_ejected_impostor
         
-        # Time penalty for all alive agents
         for agent_name in self.possible_agents:
             agent_id = self._name_to_agent_id(agent_name)
             if new_world.agents[agent_id].alive:
                 rewards[agent_name] += config.reward_time_penalty
         
-        # Proximity penalty for survivors near impostors (reward shaping)
         for agent_name in self.possible_agents:
             agent_id = self._name_to_agent_id(agent_name)
             agent = new_world.agents[agent_id]
             
             if agent.role == Role.SURVIVOR and agent.alive:
-                # Check if in same room as any impostor
                 impostor_in_room = False
                 for other_id, other in new_world.agents.items():
                     if (other.role == Role.IMPOSTOR and 
@@ -522,13 +467,10 @@ class AegisEnv(ParallelEnv):
                         break
                 
                 if impostor_in_room:
-                    # Update proximity counter
                     agent.proximity_to_impostor_ticks += 1
-                    # Apply penalty if threshold reached
                     if agent.proximity_to_impostor_ticks >= config.proximity_penalty_ticks:
                         rewards[agent_name] += config.reward_proximity_penalty
                 else:
-                    # Reset counter when not near impostor
                     agent.proximity_to_impostor_ticks = 0
         
         return rewards
@@ -540,7 +482,7 @@ class AegisEnv(ParallelEnv):
                 self.proximity_ticks[agent_id] = 0
                 continue
             
-            # Count how many other agents are in the same room
+
             other_agents_in_room = 0
             for other_id, other in world.agents.items():
                 if other_id != agent_id and other.alive and other.room == agent.room:
@@ -562,17 +504,13 @@ class AegisEnv(ParallelEnv):
             if not agent.alive:
                 continue
             
-            # For impostors: decay if no kills recently
             if agent.role == Role.IMPOSTOR:
                 ticks_since_kill = self.ticks_since_kill.get(agent_id, 0)
-                # Decay by 0.1 every 10 ticks if no kills (slow decay)
                 if ticks_since_kill > 0 and ticks_since_kill % 10 == 0:
                     self.suspicion_score[agent_id] = max(0.0, self.suspicion_score[agent_id] - 0.1)
                 
-                # Increment ticks since kill
                 self.ticks_since_kill[agent_id] = ticks_since_kill + 1
             
-            # Ensure scores stay in [0, 1]
             self.suspicion_score[agent_id] = max(0.0, min(1.0, self.suspicion_score[agent_id]))
     
     def _update_suspicion_from_events(
@@ -604,10 +542,8 @@ class AegisEnv(ParallelEnv):
                 victim_id = event.data["victim_id"]
                 kill_room = event.data["room"]
                 
-                # Check if killer is impostor (should always be true, but check anyway)
                 killer = old_world.agents.get(killer_id)
                 if killer and killer.role == Role.IMPOSTOR:
-                    # Check for witnesses in the same room
                     witnesses = []
                     for agent_id, agent in old_world.agents.items():
                         if agent_id == killer_id or agent_id == victim_id:
@@ -615,12 +551,10 @@ class AegisEnv(ParallelEnv):
                         if not agent.alive:
                             continue
                         if agent.room == kill_room:
-                            # Check vision distance
                             dist = self.engine.get_graph_distance(old_world, agent.room, kill_room)
                             if dist <= self.config.vision_radius:
                                 witnesses.append(agent_id)
                     
-                    # +0.3 if at least one witness is nearby - buffer this event
                     if len(witnesses) > 0:
                         suspect_event = SuspectEvent(
                             target_agent=killer_id,
@@ -630,29 +564,25 @@ class AegisEnv(ParallelEnv):
                         )
                         self.pending_suspicions[killer_id].append(suspect_event)
                     
-                    # Reset kill counter
+
                     self.ticks_since_kill[killer_id] = 0
             
             elif event.event_type == EventType.REPORT:
-                # When a body is reported, check who was near it
                 reporter_id = event.data["reporter_id"]
                 body_room = event.data["room"]
                 
-                # Find the body that was reported
+
                 for body in old_world.bodies:
                     if body.room == body_room:
-                        # Check if body is "fresh" (killed recently, within last 10 ticks)
                         body_age = old_world.tick - body.tick_killed
                         if body_age <= 10:
-                            # Agents who were in same room as fresh body get suspicion - buffer these events
                             for agent_id, agent in old_world.agents.items():
                                 if agent_id == reporter_id:
-                                    continue  # Reporter is doing their job
+                                    continue
                                 if not agent.alive:
                                     continue
                                 if agent.room == body_room:
                                     if agent.role == Role.IMPOSTOR:
-                                        # Impostor near body: +0.2
                                         suspect_event = SuspectEvent(
                                             target_agent=agent_id,
                                             event_type="near_body",
@@ -661,7 +591,6 @@ class AegisEnv(ParallelEnv):
                                         )
                                         self.pending_suspicions[agent_id].append(suspect_event)
                                     else:
-                                        # Survivor near body: +0.05
                                         suspect_event = SuspectEvent(
                                             target_agent=agent_id,
                                             event_type="near_body",
@@ -674,17 +603,12 @@ class AegisEnv(ParallelEnv):
                 agent_id = event.data["agent_id"]
                 agent = new_world.agents.get(agent_id)
                 if agent and agent.role == Role.SURVIVOR:
-                    # Survivor task progress: -0.05 (reduces suspicion immediately)
-                    # This doesn't need delay as it's exonerating evidence
                     self.suspicion_score[agent_id] = max(0.0, self.suspicion_score[agent_id] - 0.05)
         
-        # Update suspicion for impostors staying near other agents - buffer these events
         for agent_id, agent in new_world.agents.items():
             if not agent.alive:
                 continue
             if agent.role == Role.IMPOSTOR:
-                # If impostor has been near other agents for 5+ consecutive ticks, add suspicion
-                # Add suspicion every 5 ticks while near other agents (5, 10, 15, etc.)
                 proximity_count = self.proximity_ticks.get(agent_id, 0)
                 if proximity_count >= 5 and proximity_count % 5 == 0:
                     suspect_event = SuspectEvent(
@@ -711,7 +635,6 @@ class AegisEnv(ParallelEnv):
             if not pending:
                 continue
             
-            # Split pending events into still_pending and newly_active
             still_pending = []
             newly_active = []
             
@@ -721,17 +644,13 @@ class AegisEnv(ParallelEnv):
                 else:
                     still_pending.append(event)
             
-            # Update buffers
             self.pending_suspicions[agent_id] = still_pending
             
-            # Apply newly activated suspicions to scores
             for event in newly_active:
                 self.suspicion_score[agent_id] += event.suspicion_value
             
-            # Add to active suspicions (for potential future use/debugging)
             self.active_suspicions[agent_id].extend(newly_active)
         
-        # Clamp all suspicion scores to [0, 1]
         for agent_id in self.suspicion_score:
             self.suspicion_score[agent_id] = max(0.0, min(1.0, self.suspicion_score[agent_id]))
     
@@ -749,20 +668,18 @@ class AegisEnv(ParallelEnv):
             elif event.event_type == EventType.MESSAGE_SENT:
                 self.metrics.messages_sent += 1
             elif event.event_type == EventType.COMM_ACTION:
-                # Track communication action counts
-                action_name = event.data.get("action_name", "")
-                if "SUPPORT" in action_name:
+                action_name = event.data.get("action_name",  "")
+                if  "SUPPORT" in action_name:
                     self.metrics.comm_support_count += 1
-                elif "ACCUSE" in action_name:
+                elif  "ACCUSE" in action_name:
                     self.metrics.comm_accuse_count += 1
-                elif "DEFEND" in action_name:
+                elif  "DEFEND" in action_name:
                     self.metrics.comm_defend_count += 1
-                elif "QUESTION" in action_name:
+                elif  "QUESTION" in action_name:
                     self.metrics.comm_question_count += 1
-                elif "NO_OP" in action_name:
+                elif  "NO_OP" in action_name:
                     self.metrics.comm_noop_count += 1
             elif event.event_type == EventType.VOTE_FAILED_LOW_CONFIDENCE:
-                # Track failed votes due to confidence threshold
                 self.metrics.failed_votes_low_confidence += 1
                 max_score = event.data.get("max_score", 0.0)
                 self.metrics.max_voting_scores.append(max_score)
@@ -782,9 +699,8 @@ class AegisEnv(ParallelEnv):
                 continue
             
             action_type, param = self.engine.parse_action(action)
-            if action_type == "comm_action":
+            if action_type ==  "comm_action":
                 comm_action_id = param
-                # Buffer the communication action for delayed trust update
                 self.trust_manager.buffer_comm_action(
                     sender_id=agent_id,
                     action_id=comm_action_id,
@@ -812,54 +728,42 @@ class AegisEnv(ParallelEnv):
         Returns:
             dict mapping agent_id -> voting score [0, 1]
         """
-        # Ensure trust_voting_weight is in valid range
-        assert 0.0 <= self.config.trust_voting_weight <= 1.0, \
-            f"trust_voting_weight must be in [0, 1], got {self.config.trust_voting_weight}"
+        assert 0.0 <= self.config.trust_voting_weight <= 1.0,            f"trust_voting_weight must be in [0, 1], got {self.config.trust_voting_weight}"
         
         voting_scores = {}
         
-        # Check if we're in a meeting phase (add noise to suspicion)
         in_meeting = self.world is not None and self.world.phase == Phase.MEETING
         meeting_noise = self.config.meeting_suspicion_noise if in_meeting else 0.0
         
         if self.trust_manager is None or self.config.trust_voting_weight == 0.0:
-            # No trust integration, use pure suspicion scores
             for agent_id in range(self.config.num_agents):
                 base_score = self.suspicion_score[agent_id]
                 
-                # Add noise during meetings to make individual suspicion unreliable
                 if meeting_noise > 0:
-                    # Add uniform noise: [-noise/2, +noise/2]
                     noise = (self.engine._rng.random() - 0.5) * meeting_noise
                     base_score = base_score + noise
                 
                 voting_scores[agent_id] = max(0.0, min(1.0, base_score))
         else:
-            # Combine suspicion with trust-based distrust
             distrust_scores = self.trust_manager.get_distrust_scores()
             trust_weight = self.config.trust_voting_weight
             
             for agent_id in range(self.config.num_agents):
                 suspicion = self.suspicion_score[agent_id]
                 
-                # Add noise to suspicion during meetings
                 if meeting_noise > 0:
                     noise = (self.engine._rng.random() - 0.5) * meeting_noise
                     suspicion = max(0.0, min(1.0, suspicion + noise))
                 
                 distrust = distrust_scores.get(agent_id, 0.5)
                 
-                # EXACT LINEAR COMBINATION (no nonlinear mixing)
                 voting_scores[agent_id] = (
                     suspicion * (1.0 - trust_weight) + distrust * trust_weight
                 )
                 
-                # Ensure scores stay in [0, 1]
                 voting_scores[agent_id] = max(0.0, min(1.0, voting_scores[agent_id]))
                 
-                # POST-CONDITION: Voting score must be in [0, 1]
-                assert 0.0 <= voting_scores[agent_id] <= 1.0, \
-                    f"Voting score out of bounds for agent {agent_id}: {voting_scores[agent_id]}"
+                assert 0.0 <= voting_scores[agent_id] <= 1.0,                    f"Voting score out of bounds for agent {agent_id}: {voting_scores[agent_id]}"
         
         return voting_scores
     
@@ -868,7 +772,7 @@ class AegisEnv(ParallelEnv):
         if self.world is None:
             return None
         
-        if self.render_mode == "ansi" or self.render_mode == "human":
+        if self.render_mode ==  "ansi" or self.render_mode ==  "human":
             return self._render_text()
         
         return None
@@ -881,10 +785,10 @@ class AegisEnv(ParallelEnv):
         lines.append(f"=== Tick {world.tick} | Phase: {world.phase.name} ===")
         lines.append(f"EVAC Active: {world.evac_active} | EVAC Counter: {world.evac_tick_counter}")
         
-        # Room layout (3x3 grid)
+
         lines.append("\nMap:")
         for row in range(3):
-            row_str = ""
+            row_str =  ""
             for col in range(3):
                 room_id = row * 3 + col
                 agents_in_room = [
@@ -901,51 +805,51 @@ class AegisEnv(ParallelEnv):
                 if agents_in_room:
                     agent_chars = []
                     for a in agents_in_room:
-                        char = "I" if a.role == Role.IMPOSTOR else "S"
+                        char =  "I" if a.role == Role.IMPOSTOR else  "S"
                         agent_chars.append(f"{char}{a.agent_id}")
-                    cell += "(" + ",".join(agent_chars) + ")"
+                    cell +=  "(" +  ",".join(agent_chars) +  ")"
                 
                 if bodies_in_room:
-                    cell += " X"
+                    cell +=  " X"
                 
                 row_str += f"{cell:20}"
             lines.append(row_str)
         
-        # Closed doors
+
         closed_doors = [e for e, d in world.doors.items() if not d.is_open]
         if closed_doors:
             lines.append(f"\nClosed doors: {closed_doors}")
         
-        # Agent status
+
         lines.append("\nAgents:")
         for agent in world.agents.values():
-            role = "IMP" if agent.role == Role.IMPOSTOR else "SRV"
-            status = "ALIVE" if agent.alive else "DEAD"
-            task_info = ""
+            role =  "IMP" if agent.role == Role.IMPOSTOR else  "SRV"
+            status =  "ALIVE" if agent.alive else  "DEAD"
+            task_info =  ""
             if agent.role == Role.SURVIVOR:
                 completed = sum(1 for t in agent.tasks if t.completed)
                 task_info = f" | Tasks: {completed}/{len(agent.tasks)}"
-            cooldown_info = ""
+            cooldown_info =  ""
             if agent.role == Role.IMPOSTOR:
                 cooldown_info = f" | Kill CD: {agent.kill_cooldown}, Door CD: {agent.door_cooldown}"
             lines.append(f"  Agent {agent.agent_id} [{role}] {status} in Room {agent.room}{task_info}{cooldown_info}")
         
-        # Meeting info
+
         if world.meeting:
             lines.append(f"\nMeeting: Reporter={world.meeting.reporter_id}, Body in Room {world.meeting.body_location}")
             lines.append(f"Timer: {world.meeting.phase_timer} | Messages: {len(world.meeting.messages)}")
             lines.append(f"Votes: {world.meeting.votes}")
         
-        # Task progress
+
         lines.append(f"\nTeam Task Progress: {world.team_task_progress()}/{world.total_task_steps()}")
         
         if world.terminated:
-            winner = "SURVIVORS" if world.winner == Role.SURVIVOR else "IMPOSTORS"
+            winner =  "SURVIVORS" if world.winner == Role.SURVIVOR else  "IMPOSTORS"
             lines.append(f"\n*** GAME OVER: {winner} WIN! ***")
         
-        result = "\n".join(lines)
+        result =  "\n".join(lines)
         
-        if self.render_mode == "human":
+        if self.render_mode ==  "human":
             print(result)
         
         return result
@@ -960,11 +864,11 @@ class AegisEnv(ParallelEnv):
         Returns:
             True if event should be logged, False otherwise
         """
-        # If no filter is set, log all events
+
         if self.log_event_types is None:
             return True
         
-        # Check if event type is in the allowed list
+
         return event.event_type.value in self.log_event_types
     
     def close(self) -> None:

@@ -31,7 +31,7 @@ class EventType(str, Enum):
     EVAC_PROGRESS = "evac_progress"
     WIN = "win"
     KNOWER_REVEAL = "knower_reveal"
-    MEETING_SUMMARY = "meeting_summary"  # Summary of meeting with all communications and voting results
+    MEETING_SUMMARY = "meeting_summary"
 
 
 @dataclass
@@ -55,7 +55,7 @@ def make_event(event_type: EventType, tick: int, **kwargs) -> Event:
     return Event(event_type=event_type, tick=tick, data=kwargs)
 
 
-# Convenience functions for creating specific events
+
 def kill_event(tick: int, killer_id: int, victim_id: int, room: int) -> Event:
     return make_event(EventType.KILL, tick, killer_id=killer_id, victim_id=victim_id, room=room)
 
@@ -142,7 +142,7 @@ def comm_action_event(
         "action_name": action_name,
     }
     
-    # Add optional context fields
+
     if sender_role is not None:
         data["sender_role"] = sender_role
     if target_id is not None:

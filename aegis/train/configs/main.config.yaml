@@ -1,0 +1,121 @@
+env:
+  num_survivors: 4
+  num_impostors: 2
+  num_rooms: 9
+  evac_room: 4
+  vision_radius: 2
+  tasks_per_survivor: 4
+  task_ticks_single: 5
+  task_ticks_two_step: 3
+  two_step_task_probability: 0.3
+  kill_cooldown: 25
+  initial_kill_delay: 100 
+  door_close_duration: 15
+  door_cooldown: 40
+  protect_evac_door: true
+  meeting_discussion_ticks: 80
+  meeting_voting_ticks: 40
+  evac_ticks_required: 5
+  max_ticks: 600
+  min_episode_ticks_before_impostor_win: 250
+  enable_knower: false
+  max_messages_per_meeting: 10
+  comm_mode: broadcast
+  memory_mode: none
+  suspicion_delay_ticks: 30
+  
+  enable_trust_comm: true          # Enable discrete communication actions (SUPPORT, ACCUSE, etc.)
+  trust_delay_ticks: 1              # Delay before trust updates take effect
+  trust_initial_value: 0.5          # Initial trust between agents [0, 1]
+  trust_support_delta: 0.15         # Trust increase from SUPPORT action
+  trust_accuse_delta: -0.20         # Trust decrease from ACCUSE action (negative)
+  trust_defend_delta: 0.05          # Trust increase from DEFEND_SELF
+  trust_question_delta: -0.08       # Trust decrease from QUESTION (negative)
+  trust_voting_weight: 0.6          
+  voting_confidence_threshold: 0.5  
+  
+  voting_noise_base: 0.5            
+  voting_noise_with_coordination: 0.05
+  voting_coordination_threshold: 2  
+  
+  comm_exploration_boost: 1.5      
+  comm_exploration_decay_steps: 1000000
+  
+  meeting_observation_degradation: 0.0  
+  meeting_suspicion_noise: 0.2  
+
+rewards:  
+  survivor:
+    win: 1.5
+    task_step: 0.2
+    death: -0.4
+    ejection_bonus: 0.25
+    ejection_penalty: -0.15
+    correct_accuse: 0.1   
+    false_accuse: -0.05 
+  
+  impostor:
+    win: 0.5 
+    kill: 0.8
+    kill_witness_penalty: -0.6
+    kill_early_penalty: -0.4
+    proximity_penalty: -0.05  
+    suspicious_penalty: -0.1  
+    ejected: -2.0
+    ejection_bonus: 0.3
+    ejection_penalty: -0.5
+    correct_accuse: 0.1   
+    false_accuse: -0.05  
+
+training:
+  algorithm: PPO
+  device: auto
+  num_workers: 1
+  num_envs_per_worker: 1
+  train_batch_size: 1000
+  sgd_minibatch_size: 64
+  num_sgd_iter: 5
+  rollout_steps: 128
+  num_minibatches: 4
+  lr: 0.0003
+  entropy_coeff: 0.02  
+  clip_param: 0.2
+  clip_vloss: true
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  gamma: 0.99
+  lambda_: 0.95
+  model:
+    fcnet_hiddens: [256, 256]
+    fcnet_activation: relu
+    use_lstm: false
+    lstm_cell_size: 256
+    max_seq_len: 20
+  total_timesteps: 2000000
+  checkpoint_timesteps: 2000000
+  evaluation_interval: 25
+  evaluation_num_episodes: 10
+
+logging:
+  use_wandb: false
+  wandb_project: aegis
+  wandb_entity: null
+  log_level: INFO
+  log_interval: 10
+  experiment_name: main_experiment  # Name of experiment
+  checkpoint_dir: ./checkpoints  # Base directory
+  debug_rewards: true
+  debug_rewards_interval: 10
+  log_events: true 
+  log_event_types: 
+    - meeting_summary
+    - kill
+    - ejection
+    - win
+    - report
+
+ablations:
+  disable_communication: false
+  disable_doors: false
+  random_impostor: false
+

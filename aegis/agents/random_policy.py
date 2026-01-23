@@ -25,16 +25,16 @@ class RandomPolicy:
         action_mask = observation.get("action_mask", None)
         
         if action_mask is None:
-            # No mask, shouldn't happen but default to 0
+
             return 0
         
-        # Get valid action indices
+
         valid_actions = np.where(action_mask > 0)[0]
         
         if len(valid_actions) == 0:
             return 0
         
-        # Sample uniformly
+
         return int(self.rng.choice(valid_actions))
     
     def get_actions(self, observations: dict[str, dict]) -> dict[str, int]:

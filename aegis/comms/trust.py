@@ -1,9 +1,6 @@
-"""Trust matrix management and delayed trust updates."""
-
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 import numpy as np
 
 from aegis.comms.actions import CommVocab
@@ -14,7 +11,7 @@ class TrustUpdate:
     """A delayed trust update event."""
     target_agent: int
     trust_delta: float
-    source_action: str  # "support", "accuse", "defend", "question"
+    source_action: str
     tick_created: int
 
 
@@ -42,26 +39,26 @@ class TrustManager:
             delay_ticks: Number of ticks to delay trust updates
             initial_trust: Initial trust value for all agent pairs
         """
-        # Validate inputs
-        assert num_agents > 0, "num_agents must be positive"
-        assert delay_ticks >= 0, "delay_ticks must be non-negative"
-        assert 0.0 <= initial_trust <= 1.0, "initial_trust must be in [0, 1]"
+
+        assert num_agents > 0,  "num_agents must be positive"
+        assert delay_ticks >= 0,  "delay_ticks must be non-negative"
+        assert 0.0 <= initial_trust <= 1.0,  "initial_trust must be in [0, 1]"
         
         self.num_agents = num_agents
         self.delay_ticks = delay_ticks
         
-        # Trust matrix: trust[observer][target]
-        # All agents start with neutral trust (0.5)
+
+
         self.trust_matrix = np.full((num_agents, num_agents), initial_trust, dtype=np.float32)
         
-        # Set self-trust to 1.0 (agents fully trust themselves)
+
         for i in range(num_agents):
             self.trust_matrix[i, i] = 1.0
         
-        # Pending trust updates (not yet applied)
+
         self.pending_updates: dict[int, list[TrustUpdate]] = {i: [] for i in range(num_agents)}
         
-        # Track trust deltas for logging
+
         self.trust_deltas: dict[str, list[float]] = {
             "support": [],
             "accuse": [],
@@ -128,7 +125,7 @@ class TrustManager:
                 self.pending_updates[target_id].append(update)
         
         elif CommVocab.is_defend(action_id):
-            # DEFEND_SELF applies to sender
+
             update = TrustUpdate(
                 target_agent=sender_id,
                 trust_delta=defend_delta,
@@ -159,7 +156,7 @@ class TrustManager:
             if not pending:
                 continue
             
-            # Split into still_pending and newly_active
+
             still_pending = []
             newly_active = []
             
@@ -169,23 +166,23 @@ class TrustManager:
                 else:
                     still_pending.append(update)
             
-            # Update buffer
+
             self.pending_updates[target_id] = still_pending
             
-            # Apply newly active updates to all observers
+
             for update in newly_active:
-                # Apply to all observers (broadcast trust update)
+
                 for observer_id in range(self.num_agents):
-                    if observer_id != target_id:  # Don't change self-trust
+                    if observer_id != target_id:
                         self.trust_matrix[observer_id, target_id] += update.trust_delta
                         self.trust_matrix[observer_id, target_id] = np.clip(
                             self.trust_matrix[observer_id, target_id], 0.0, 1.0
                         )
                 
-                # Log delta for statistics
+
                 self.trust_deltas[update.source_action].append(update.trust_delta)
         
-        # CRITICAL INVARIANT: Verify self-trust remains 1.0
+
         for i in range(self.num_agents):
             assert self.trust_matrix[i, i] == 1.0, f"Self-trust violated for agent {i}"
     
@@ -209,7 +206,7 @@ class TrustManager:
         """
         distrust = {}
         for target_id in range(self.num_agents):
-            # Get average trust from all other agents
+
             trust_values = []
             for observer_id in range(self.num_agents):
                 if observer_id != target_id:

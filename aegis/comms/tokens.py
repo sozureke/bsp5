@@ -9,36 +9,36 @@ from typing import Optional
 
 class Token(IntEnum):
     """Token vocabulary for agent communication."""
-    # Meta tokens
+
     SKIP = 0
     CONFIRM = 1
     DENY = 2
     
-    # Accusation tokens (parameterized by agent index in higher bits)
+
     SUSPECT_0 = 3
     SUSPECT_1 = 4
     SUSPECT_2 = 5
     SUSPECT_3 = 6
     SUSPECT_4 = 7
     
-    # Clear tokens
+
     CLEAR_0 = 8
     CLEAR_1 = 9
     CLEAR_2 = 10
     CLEAR_3 = 11
     CLEAR_4 = 12
     
-    # Location tokens
+
     BODY_IN_ROOM_0 = 13
     BODY_IN_ROOM_1 = 14
     BODY_IN_ROOM_2 = 15
     
-    # Personal location
+
     I_WAS_IN_ROOM_0 = 16
     I_WAS_IN_ROOM_1 = 17
     I_WAS_IN_ROOM_2 = 18
     
-    # Door status
+
     DOOR_CLOSED = 19
 
 
@@ -47,7 +47,7 @@ class TokenVocab:
     
     VOCAB_SIZE = 20
     
-    # Token ranges for interpretation
+
     SUSPECT_BASE = 3
     SUSPECT_END = 8
     CLEAR_BASE = 8
@@ -118,12 +118,12 @@ class TokenVocab:
     @classmethod
     def make_body_in_room(cls, room_id: int) -> int:
         """Create BODY_IN_ROOM token."""
-        return cls.BODY_BASE + min(room_id, 2)  # Clamp to available tokens
+        return cls.BODY_BASE + min(room_id, 2)
     
     @classmethod
     def make_i_was_in_room(cls, room_id: int) -> int:
         """Create I_WAS_IN_ROOM token."""
-        return cls.I_WAS_BASE + min(room_id, 2)  # Clamp to available tokens
+        return cls.I_WAS_BASE + min(room_id, 2)
     
     @classmethod
     def token_to_string(cls, token_id: int) -> str:
