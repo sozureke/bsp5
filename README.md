@@ -35,6 +35,118 @@ pip install gymnasium pettingzoo supersuit networkx torch numpy pyyaml
 python -m aegis.train.rl_ppo -c aegis/train/configs/main.config.yaml
 ```
 
+## Experiments
+
+The project includes a comprehensive set of experiments designed to study trust and communication in multi-agent hidden role games. Each experiment answers a specific research question while keeping all other parameters constant.
+
+| Experiment | Config File | Description | Key Variable | Research Question |
+|------------|-------------|-------------|--------------|------------------|
+| **E1: Baseline** | `e1_baseline.config.yaml` | No communication, no trust. Agents vote based solely on event-based suspicion. | `enable_trust_comm: false`, `trust_voting_weight: 0.0` | What is the baseline performance without social mechanisms? |
+| **E2: Trust Only** | `e2_trust_only.config.yaml` | Event-based trust only (no communication actions). Trust updates from kills, proximity, reports. | `enable_trust_comm: false`, `trust_voting_weight: 0.6` | Does non-verbal trust provide benefits by itself? |
+| **E3: Trust + Communication** | `e3_trust_comm.config.yaml` | Full system: discrete communication (SUPPORT/ACCUSE/DEFEND/QUESTION) with delayed trust updates. | `enable_trust_comm: true`, `trust_delay_ticks: 1` | Does discrete communication improve hidden role detection? |
+| **E4: Delay (Immediate)** | `e4_delay_immediate.config.yaml` | Trust updates apply immediately (no delay). | `trust_delay_ticks: 0` | Does immediate trust enable manipulation? |
+| **E4: Delay (Delayed)** | `e4_delay_delayed.config.yaml` | Trust updates apply after delay. | `trust_delay_ticks: 5` | Does delay prevent voting manipulation? |
+| **E5: Trust Weight (0.0)** | `e5_trust_weight_0.config.yaml` | Pure suspicion-based voting (no trust influence). | `trust_voting_weight: 0.0` | What happens when trust has no voting influence? |
+| **E5: Trust Weight (Low)** | `e5_trust_weight_low.config.yaml` | Low trust influence in voting. | `trust_voting_weight: 0.3` | What is the optimal trust weight? |
+| **E5: Trust Weight (High)** | `e5_trust_weight_high.config.yaml` | High trust influence in voting. | `trust_voting_weight: 0.9` | When does trust become harmful? |
+| **E6: Field of View (Low)** | `e6_fov_low.config.yaml` | Limited visibility (vision_radius: 1). | `vision_radius: 1` | How does communication compensate for limited sensory information? |
+| **E6: Field of View (High)** | `e6_fov_high.config.yaml` | Extended visibility (vision_radius: 3). | `vision_radius: 3` | How does increased observability affect communication necessity? |
+| **E7: Knower Role** | `e7_knower.config.yaml` | One agent knows another's identity. Trust propagates this knowledge. | `enable_knower: true` | Can local knowledge become collective through trust? |
+
+### Running Experiments
+
+#### Single Experiment
+
+```bash
+# Run a specific experiment with default seed
+python -m aegis.train.rl_ppo -c aegis/train/configs/e1_baseline.config.yaml
+
+# Run with custom seed
+python -m aegis.train.rl_ppo -c aegis/train/configs/e1_baseline.config.yaml --seed 42
+
+# Analyze results (single seed)
+python -m aegis.scripts.analyze_events checkpoints/e1_baseline/seed_42/events.jsonl --summary
+```
+
+#### Multiple Experiments with Shared Seed Set
+
+For fair comparison (paired comparison), use the shared seed set:
+
+```bash
+# Run E1 with all seeds (200 seeds)
+python -m aegis.scripts.run_experiments e1_baseline.config.yaml
+
+# Run E1 with test seeds (first 10 seeds, for quick testing)
+python -m aegis.scripts.run_experiments e1_baseline.config.yaml --test
+
+# Run with limited seeds (for testing)
+python -m aegis.scripts.run_experiments e1_baseline.config.yaml --max-seeds 3
+
+# Run multiple experiments with all seeds
+python -m aegis.scripts.run_experiments e1_baseline.config.yaml e2_trust_only.config.yaml e3_trust_comm.config.yaml
+
+# Dry run (show commands without executing)
+python -m aegis.scripts.run_experiments e1_baseline.config.yaml --dry-run
+```
+
+**Output Structure:**
+Each seed creates its own subdirectory:
+```
+checkpoints/
+  e1_baseline/
+    seed_670488/
+      events.jsonl
+      training_log.json
+      ppo_final.pt
+    seed_116740/
+      events.jsonl
+      training_log.json
+      ppo_final.pt
+    ...
+```
+
+#### Merging and Analyzing Multiple Seeds
+
+After running experiments with multiple seeds, merge events for analysis:
+
+```bash
+# Merge events from all seeds into a single file
+python -m aegis.scripts.merge_events checkpoints/e1_baseline
+
+# This creates: checkpoints/e1_baseline/events_all.jsonl
+
+# Analyze the merged file
+python -m aegis.scripts.analyze_events checkpoints/e1_baseline/events_all.jsonl --summary
+
+# Find interesting meetings
+python -m aegis.scripts.analyze_events checkpoints/e1_baseline/events_all.jsonl --find-interesting
+
+# Analyze impostor strategies
+python -m aegis.scripts.analyze_events checkpoints/e1_baseline/events_all.jsonl --impostor-strategies
+```
+
+**Why shared seed set?**
+- All experiments use the same set of seeds (200 seeds by default)
+- For each seed, E1, E2, E3, etc. start with the same initial world state
+- This enables **paired comparison**: differences = effect of design, not luck
+- Reduces variance and enables fair statistical comparison
+
+### Fixed Parameters (Constant Across All Experiments)
+
+- **Agents**: 4 survivors + 2 impostors
+- **Map**: 9 rooms, evac_room=4
+- **Vision radius**: 2 (except E6)
+- **Training**: 2M timesteps, PPO with same hyperparameters
+- **Seeds**: Shared seed set (200 seeds) for all experiments
+
+### Experiment Design Principles
+
+1. **One factor per experiment**: Only the variable of interest changes
+2. **Baseline first**: E1 establishes the reference point
+3. **Progressive complexity**: E1 → E2 → E3 → E4–E7
+4. **Statistical rigor**: Multiple runs per experiment (200 seeds) for statistical significance
+5. **Paired comparison**: Same seeds across experiments enable fair comparison
+
 ## Project Structure
 
 ```
@@ -64,6 +176,8 @@ aegis/
 │   └── event_writer.py    # JSONL event logger
 └── scripts/
     ├── analyze_events.py      # Analyze events.jsonl
+    ├── merge_events.py        # Merge events from multiple seeds
+    ├── run_experiments.py    # Run experiments with shared seed set
     └── evaluate_ppo.py        # Evaluate trained models
 ```
 
@@ -196,17 +310,20 @@ During meetings, agents can use 5 types of actions:
 
 ### Logging & Analysis
 
-Communication actions are logged to JSONL event streams:
+Communication actions are logged to JSONL event streams. For experiments with multiple seeds:
 
 ```bash
-# Analyze communication patterns and meetings from logs
-python -m aegis.scripts.analyze_events checkpoints/experiment_name/events.jsonl --summary
+# First, merge events from all seeds
+python -m aegis.scripts.merge_events checkpoints/experiment_name
+
+# Then analyze the merged file
+python -m aegis.scripts.analyze_events checkpoints/experiment_name/events_all.jsonl --summary
 
 # Find interesting meetings with coordination
-python -m aegis.scripts.analyze_events checkpoints/experiment_name/events.jsonl --find-interesting
+python -m aegis.scripts.analyze_events checkpoints/experiment_name/events_all.jsonl --find-interesting
 
 # Analyze impostor strategies
-python -m aegis.scripts.analyze_events checkpoints/experiment_name/events.jsonl --impostor-strategies
+python -m aegis.scripts.analyze_events checkpoints/experiment_name/events_all.jsonl --impostor-strategies
 ```
 
 Example event structure:
@@ -230,10 +347,12 @@ trust_voting_weight: 0.3          # Weight in voting (0=off, 1=full)
 
 ### Ablation Studies
 
-- **Communication On/Off**: Compare with and without communication
-- **Trust Weight**: Vary from 0.0 (pure suspicion) to 1.0 (pure trust)
-- **Delay Sensitivity**: Test immediate vs delayed evidence
-- **Trust Deltas**: Tune strength of communication effects
+See the [Experiments](#experiments) section above for the complete experimental design. Key ablations include:
+
+- **Communication On/Off**: E1 (off) vs E3 (on)
+- **Trust Weight**: E5 series (0.0, 0.3, 0.9)
+- **Delay Sensitivity**: E4 series (immediate vs delayed)
+- **Field of View**: E6 series (low vs high visibility)
 
 ## Memory Modes
 

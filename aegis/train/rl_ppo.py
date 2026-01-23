@@ -1230,6 +1230,27 @@ def train(args: Args):
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     
+    experiment_dir = args.checkpoint_dir
+    
+    if args.experiment_name:
+        if not os.path.isabs(args.checkpoint_dir) or "seed_" not in args.checkpoint_dir:
+            experiment_dir = os.path.join(args.checkpoint_dir, args.experiment_name)
+        os.makedirs(experiment_dir, exist_ok=True)
+        print(f"Experiment: {args.experiment_name}")
+        print(f"Experiment directory: {experiment_dir}")
+    else:
+        print(f"Using checkpoint directory: {experiment_dir}")
+    
+    if args.log_events and not args.event_log_path:
+        event_log_path_from_env = os.environ.get("AEGIS_EVENT_LOG_PATH")
+        if event_log_path_from_env:
+            args.event_log_path = event_log_path_from_env
+        else:
+            args.event_log_path = os.path.join(experiment_dir, "events.jsonl")
+    
+    if args.event_log_path and args.log_events:
+        os.makedirs(os.path.dirname(args.event_log_path) if os.path.dirname(args.event_log_path) else ".", exist_ok=True)
+    
     env = make_env(args)
     num_agents = len(env.possible_agents)
     
@@ -1313,24 +1334,6 @@ def train(args: Args):
     all_false_accuse_impostor = []
     
 
-    if args.experiment_name:
-
-        experiment_dir = os.path.join(args.checkpoint_dir, args.experiment_name)
-        os.makedirs(experiment_dir, exist_ok=True)
-        print(f"Experiment: {args.experiment_name}")
-        print(f"Experiment directory: {experiment_dir}")
-        
-
-        if args.log_events and not args.event_log_path:
-            args.event_log_path = os.path.join(experiment_dir,  "events.jsonl")
-
-            env.close()
-            env = make_env(args)
-    else:
-
-        experiment_dir = args.checkpoint_dir
-        print(f"Using checkpoint directory: {experiment_dir}")
-    
     os.makedirs(experiment_dir, exist_ok=True)
     
     obs_dict, _ = env.reset()
@@ -1492,11 +1495,11 @@ def train(args: Args):
                             imp_min, imp_max = min(recent_impostor), max(recent_impostor)
                             print(f"Impostor range: [{imp_min:.2f}, {imp_max:.2f}]")
                 
-                print(f"  PG loss: {update_stats['pg_loss']:7.4f} | "
+                print(f" PG loss: {update_stats['pg_loss']:7.4f} | "
                       f"V loss: {update_stats['v_loss']:7.4f} | "
                       f"Entropy: {update_stats['entropy']:6.4f} | "
                       f"KL: {update_stats['approx_kl']:6.4f}")
-                print(f"  Critic values: Survivor {update_stats['mean_survivor_value']:7.3f} | "
+                print(f"Critic values: Survivor {update_stats['mean_survivor_value']:7.3f} | "
                       f"Impostor {update_stats['mean_impostor_value']:7.3f}")
                 print()
                 
