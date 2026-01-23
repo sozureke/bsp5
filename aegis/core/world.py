@@ -121,6 +121,7 @@ class MeetingState:
     reporter_id: int
     body_location: int
     body_agent_id: int
+    tick_start: int  # Tick when meeting started (for logging and analysis)
     phase_timer: int = 0  # ticks elapsed in current meeting phase
     messages: list[tuple[int, int, int]] = field(default_factory=list)  # (tick, sender_id, token_id)
     votes: dict[int, Optional[int]] = field(default_factory=dict)  # voter_id -> target_id or None (skip)

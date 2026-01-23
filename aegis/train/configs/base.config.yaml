@@ -9,6 +9,7 @@ env:
   task_ticks_two_step: 3
   two_step_task_probability: 0.3
   kill_cooldown: 25
+  initial_kill_delay: 80  # Minimum ticks before first kill allowed (gives survivors time to coordinate)
   door_close_duration: 15
   door_cooldown: 40
   protect_evac_door: true
@@ -16,6 +17,7 @@ env:
   meeting_voting_ticks: 30
   evac_ticks_required: 5
   max_ticks: 400
+  min_episode_ticks_before_impostor_win: 120  # Environment constraint: impostor cannot win before this tick (gives survivors time to coordinate)
   enable_knower: false
   max_messages_per_meeting: 10
   comm_mode: broadcast
@@ -23,15 +25,26 @@ env:
   suspicion_delay_ticks: 30
   
   enable_trust_comm: true          # Enable discrete communication actions (SUPPORT, ACCUSE, etc.)
-  trust_delay_ticks: 5              # Delay before trust updates take effect
+  trust_delay_ticks: 1              # Delay before trust updates take effect (reduced for faster effect)
   trust_initial_value: 0.5          # Initial trust between agents [0, 1]
   trust_support_delta: 0.15         # Trust increase from SUPPORT action
   trust_accuse_delta: -0.20         # Trust decrease from ACCUSE action (negative)
   trust_defend_delta: 0.05          # Trust increase from DEFEND_SELF
   trust_question_delta: -0.08       # Trust decrease from QUESTION (negative)
-  trust_voting_weight: 0.3          # Weight of trust in voting (0=no effect, 1=full effect)
-  voting_confidence_threshold: 0.4  # Minimum voting score to eject [0, 1] - forces evidence accumulation
-
+  trust_voting_weight: 0.6          # Weight of trust in voting (0=no effect, 1=full effect) - increased for stronger trust influence
+  voting_confidence_threshold: 0.5  # Minimum voting score to eject [0, 1] - increased to force more evidence accumulation
+  
+  # Structural necessity: voting noise makes communication coordination essential
+  voting_noise_base: 0.5            
+  voting_noise_with_coordination: 0.05
+  voting_coordination_threshold: 2  # Minimum number of ACCUSE actions on same target to reduce noise
+  
+  # Communication exploration boost (encourages initial exploration of communication actions)
+  comm_exploration_boost: 1.5      # Boost logits for communication actions during meetings [0, 2]
+  comm_exploration_decay_steps: 1000000  # Increased: slower decay to maintain exploration longer
+  
+  meeting_observation_degradation: 0.0  # Reduce visibility radius during meetings [0, 1]
+  meeting_suspicion_noise: 0.2
 rewards:  
   survivor:
     win: 1.5
@@ -39,6 +52,9 @@ rewards:
     death: -0.4
     ejection_bonus: 0.25
     ejection_penalty: -0.15
+    # Outcome-based communication rewards (applied after ejection, not for communication itself)
+    correct_accuse: 0.1   # Increased: reward for correctly accusing an impostor who gets ejected (was 0.04)
+    false_accuse: -0.05   # Increased: penalty for falsely accusing a survivor who gets ejected (was -0.025)
   
   impostor:
     win: 0.5 
@@ -50,6 +66,9 @@ rewards:
     ejected: -2.0
     ejection_bonus: 0.3
     ejection_penalty: -0.5
+    # Outcome-based communication rewards (applied after ejection, not for communication itself)
+    correct_accuse: 0.1   # Increased: reward for correctly accusing an impostor who gets ejected (was 0.04)
+    false_accuse: -0.05   # Increased: penalty for falsely accusing a survivor who gets ejected (was -0.025)
 
 training:
   algorithm: PPO
@@ -62,7 +81,7 @@ training:
   rollout_steps: 128
   num_minibatches: 4
   lr: 0.0003
-  entropy_coeff: 0.01
+  entropy_coeff: 0.02  
   clip_param: 0.2
   clip_vloss: true
   vf_coef: 0.5
@@ -89,6 +108,17 @@ logging:
   checkpoint_dir: ./checkpoints
   debug_rewards: true
   debug_rewards_interval: 10
+  log_events: true  # Enable detailed event logging (meetings, communications, etc.)
+  event_log_path: ./checkpoints/events.jsonl  # Path for event log file
+  log_event_types:  # Filter: only log these event types (empty list = log all)
+    - comm_action
+    - meeting_summary
+    - meeting_start
+    - meeting_end
+    - kill
+    - ejection
+    - win
+    - report
 
 ablations:
   disable_communication: false

@@ -37,6 +37,12 @@ class RoleRewards:
     impostor_ejection_penalty: float = -0.5
     impostor_proximity_penalty: float = -0.05
     impostor_suspicious_penalty: float = -0.1
+    
+    # Outcome-based communication rewards (applied after ejection)
+    # Reward for correctly accusing an impostor who gets ejected
+    correct_accuse: float = 0.04
+    # Penalty for falsely accusing a survivor who gets ejected
+    false_accuse: float = -0.025
 
 
 @dataclass
@@ -53,13 +59,16 @@ class RewardBreakdown:
     ejected: float = 0.0
     ejection_bonus: float = 0.0
     ejection_penalty: float = 0.0
+    correct_accuse: float = 0.0  # Reward for correctly accusing an impostor who gets ejected
+    false_accuse: float = 0.0  # Penalty for falsely accusing a survivor who gets ejected
     env_raw: float = 0.0
     
     @property
     def total(self) -> float:
         return (self.task_step + self.team_task_step + self.kill + self.kill_witness_penalty + 
                 self.kill_early_penalty + self.proximity_penalty + self.suspicious_penalty +
-                self.win + self.death + self.ejected + self.ejection_bonus + self.ejection_penalty)
+                self.win + self.death + self.ejected + self.ejection_bonus + self.ejection_penalty +
+                self.correct_accuse + self.false_accuse)
 
 
 @dataclass
@@ -98,6 +107,8 @@ class EpisodeRewardStats:
             ejected_list = [b.ejected for b in breakdowns]
             ejection_bonus_list = [b.ejection_bonus for b in breakdowns]
             ejection_penalty_list = [b.ejection_penalty for b in breakdowns]
+            correct_accuse_list = [b.correct_accuse for b in breakdowns]
+            false_accuse_list = [b.false_accuse for b in breakdowns]
             env_raws = [b.env_raw for b in breakdowns]
             return {
                 "total": {"sum": sum(totals), "mean": np.mean(totals)},
@@ -113,6 +124,8 @@ class EpisodeRewardStats:
                 "ejected": {"sum": sum(ejected_list)},
                 "ejection_bonus": {"sum": sum(ejection_bonus_list)},
                 "ejection_penalty": {"sum": sum(ejection_penalty_list)},
+                "correct_accuse": {"sum": sum(correct_accuse_list)},
+                "false_accuse": {"sum": sum(false_accuse_list)},
                 "env_raw": {"sum": sum(env_raws), "mean": np.mean(env_raws)},
             }
         
@@ -154,6 +167,10 @@ class Args:
     debug_rewards: bool = False
     debug_rewards_interval: int = 10
     
+    log_events: bool = False  # Enable detailed event logging
+    event_log_path: Optional[str] = None  # Path for event log file
+    log_event_types: Optional[list[str]] = None  # Filter: only log these event types (None = log all)
+    
     game_config: Optional[dict] = None
     role_rewards: Optional[RoleRewards] = None
 
@@ -169,6 +186,10 @@ class Args:
         model = training.get("model", {})        
         survivor_rewards = rewards.get("survivor", {})
         impostor_rewards = rewards.get("impostor", {})
+        
+        # Get outcome-based communication rewards (shared for both roles)
+        correct_accuse = survivor_rewards.get("correct_accuse", impostor_rewards.get("correct_accuse", 0.04))
+        false_accuse = survivor_rewards.get("false_accuse", impostor_rewards.get("false_accuse", -0.025))
         
         role_rewards = RoleRewards(
             survivor_win=survivor_rewards.get("win", 3.0),
@@ -187,6 +208,8 @@ class Args:
             impostor_ejection_penalty=impostor_rewards.get("ejection_penalty", -0.5),
             impostor_proximity_penalty=impostor_rewards.get("proximity_penalty", -0.05),
             impostor_suspicious_penalty=impostor_rewards.get("suspicious_penalty", -0.1),
+            correct_accuse=correct_accuse,  # Outcome-based reward for correct accusations
+            false_accuse=false_accuse,  # Outcome-based penalty for false accusations
         )
         
         hidden = model.get("fcnet_hiddens", [256])
@@ -205,6 +228,7 @@ class Args:
             "task_ticks_two_step": env.get("task_ticks_two_step", 3),
             "two_step_task_probability": env.get("two_step_task_probability", 0.3),
             "kill_cooldown": env.get("kill_cooldown", 30),
+            "initial_kill_delay": env.get("initial_kill_delay", 0),
             "door_close_duration": env.get("door_close_duration", 15),
             "door_cooldown": env.get("door_cooldown", 40),
             "protect_evac_door": env.get("protect_evac_door", True),
@@ -212,10 +236,33 @@ class Args:
             "meeting_voting_ticks": env.get("meeting_voting_ticks", 30),
             "evac_ticks_required": env.get("evac_ticks_required", 5),
             "max_ticks": env.get("max_ticks", 500),
+            "min_episode_ticks_before_impostor_win": env.get("min_episode_ticks_before_impostor_win", 0),
             "enable_knower": env.get("enable_knower", False),
             "max_messages_per_meeting": env.get("max_messages_per_meeting", 10),
             "comm_mode": env.get("comm_mode", "broadcast"),
             "memory_mode": env.get("memory_mode", "none"),
+            "suspicion_delay_ticks": env.get("suspicion_delay_ticks", 30),
+            # Trust-based communication settings
+            "enable_trust_comm": env.get("enable_trust_comm", False),
+            "trust_delay_ticks": env.get("trust_delay_ticks", 5),
+            "trust_initial_value": env.get("trust_initial_value", 0.5),
+            "trust_support_delta": env.get("trust_support_delta", 0.15),
+            "trust_accuse_delta": env.get("trust_accuse_delta", -0.20),
+            "trust_defend_delta": env.get("trust_defend_delta", 0.05),
+            "trust_question_delta": env.get("trust_question_delta", -0.08),
+            "trust_voting_weight": env.get("trust_voting_weight", 0.3),
+            # Voting settings
+            "voting_confidence_threshold": env.get("voting_confidence_threshold", 0.0),
+            "voting_noise_base": env.get("voting_noise_base", 0.0),
+            "voting_noise_with_coordination": env.get("voting_noise_with_coordination", 0.0),
+            "voting_coordination_threshold": env.get("voting_coordination_threshold", 2),
+            # Communication exploration boost
+            "comm_exploration_boost": env.get("comm_exploration_boost", 0.5),
+            "comm_exploration_decay_steps": env.get("comm_exploration_decay_steps", 100000),
+            # Meeting observation degradation (optional)
+            "meeting_observation_degradation": env.get("meeting_observation_degradation", 0.0),
+            "meeting_suspicion_noise": env.get("meeting_suspicion_noise", 0.0),
+            # Rewards
             "reward_win": rewards.get("win", 1.0),
             "reward_loss": rewards.get("loss", -1.0),
             "reward_task_step": rewards.get("task_step", 0.05),
@@ -255,9 +302,12 @@ class Args:
             checkpoint_dir=logging_cfg.get("checkpoint_dir", "./checkpoints"),
             debug_rewards=logging_cfg.get("debug_rewards", False),
             debug_rewards_interval=logging_cfg.get("debug_rewards_interval", 10),
+            log_events=logging_cfg.get("log_events", False),
+            event_log_path=logging_cfg.get("event_log_path", None),
+            log_event_types=logging_cfg.get("log_event_types", None),
             game_config=game_config,
             role_rewards=role_rewards,
-        )
+        )   
 
     def override(self, **kwargs) -> "Args":
         """Return new Args with specified fields overridden (ignores None)."""
@@ -361,10 +411,16 @@ class ActorCritic(nn.Module):
         - Separate critic heads per role (survivor vs impostor value functions)
     """
     
-    def __init__(self, obs_dim: int, action_dim: int, hidden_dim: int = 256):
+    def __init__(self, obs_dim: int, action_dim: int, hidden_dim: int = 256,
+                 comm_offset: int = 0, comm_exploration_boost: float = 0.0,
+                 comm_exploration_decay_steps: int = 100000):
         super().__init__()
         
         self.action_dim = action_dim
+        self.comm_offset = comm_offset  # Offset for communication actions in action space
+        self.comm_exploration_boost = comm_exploration_boost  # Boost amount for communication actions
+        self.comm_exploration_decay_steps = comm_exploration_decay_steps
+        self.global_step = 0  # Track training steps for decay
         
         # Shared feature extractor
         self.shared = nn.Sequential(
@@ -445,13 +501,24 @@ class ActorCritic(nn.Module):
         # Compute logits from both actor heads
         logits_survivor = self.actor_survivor(features)  # (batch, action_dim)
         logits_impostor = self.actor_impostor(features)  # (batch, action_dim)
-        
-        # Select logits based on role per sample
-        # roles: (batch,) -> expand to (batch, action_dim) for gathering
         role_mask = roles.unsqueeze(-1).expand(-1, self.action_dim)  # (batch, action_dim)
         
-        # role == 0 -> survivor, role == 1 -> impostor
         logits = torch.where(role_mask == 0, logits_survivor, logits_impostor)
+        
+        if obs.shape[1] >= 3 and self.comm_offset > 0 and self.comm_exploration_boost > 0:
+            phase_onehot = obs[:, :3]
+            is_meeting = phase_onehot[:, 1] > 0.5 
+            
+            if is_meeting.any():
+                decay_factor = max(0.0, 1.0 - (self.global_step / max(1, self.comm_exploration_decay_steps)))
+                current_boost = self.comm_exploration_boost * decay_factor
+                
+                if current_boost > 0:
+                    comm_end = min(self.comm_offset + 17, self.action_dim)
+                    for i in range(obs.shape[0]):
+                        if is_meeting[i] and comm_end <= self.action_dim:
+                            comm_mask = action_mask[i, self.comm_offset:comm_end]
+                            logits[i, self.comm_offset:comm_end] += current_boost * comm_mask.float()
         
         dist = CategoricalMasked(logits=logits, mask=action_mask)
         
@@ -612,6 +679,15 @@ def compute_role_shaped_rewards(
                 breakdown.ejection_penalty = role_rewards.survivor_ejection_penalty
                 reward += breakdown.ejection_penalty
             
+            # Outcome-based communication rewards: correct/false accusations
+            if info.get("correct_accuse", False):
+                breakdown.correct_accuse = role_rewards.correct_accuse
+                reward += breakdown.correct_accuse
+            
+            if info.get("false_accuse", False):
+                breakdown.false_accuse = role_rewards.false_accuse
+                reward += breakdown.false_accuse
+            
             # Survivor elimination penalties
             if was_alive and not is_alive:
                 if info.get("was_killed", False):
@@ -714,6 +790,15 @@ def compute_role_shaped_rewards(
                 breakdown.ejection_penalty = role_rewards.impostor_ejection_penalty
                 reward += breakdown.ejection_penalty
             
+            # Outcome-based communication rewards: correct/false accusations
+            if info.get("correct_accuse", False):
+                breakdown.correct_accuse = role_rewards.correct_accuse
+                reward += breakdown.correct_accuse
+            
+            if info.get("false_accuse", False):
+                breakdown.false_accuse = role_rewards.false_accuse
+                reward += breakdown.false_accuse
+            
             # Impostor elimination: impostors can only leave via voting (EJECTION)
             if was_alive and not is_alive:
                 # Safety assertion: impostors can only be ejected, never killed
@@ -779,6 +864,14 @@ def collect_rollout(
             )
         
         actions_dict = {name: actions[i].item() for i, name in enumerate(agent_names)}
+        
+        comm_action_count = 0
+        if hasattr(env, 'engine') and hasattr(env.engine, 'offset_comm'):
+            for name in agent_names:
+                action = actions_dict[name]
+                if env.engine.offset_comm <= action < env.engine.offset_comm + 17:
+                    comm_action_count += 1
+        
         next_obs_dict, rewards_dict, terminations, truncations, infos = env.step(actions_dict)
         
         terminated = any(terminations.values()) or any(truncations.values())
@@ -856,6 +949,20 @@ def collect_rollout(
                     "max_voting_scores": metrics_dict.get("max_voting_scores", []),
                 }
             
+            # Extract accusation reward stats if debug_rewards is enabled
+            accusation_metrics = {}
+            if debug_rewards and episode_stats is not None:
+                stats = episode_stats.summary()
+                survivor_stats = stats.get("survivor", {})
+                impostor_stats = stats.get("impostor", {})
+                
+                accusation_metrics = {
+                    "correct_accuse_survivor": survivor_stats.get("correct_accuse", {}).get("sum", 0.0),
+                    "false_accuse_survivor": survivor_stats.get("false_accuse", {}).get("sum", 0.0),
+                    "correct_accuse_impostor": impostor_stats.get("correct_accuse", {}).get("sum", 0.0),
+                    "false_accuse_impostor": impostor_stats.get("false_accuse", {}).get("sum", 0.0),
+                }
+            
             completed_episodes.append({
                 "total_reward": sum(episode_rewards.values()),
                 "mean_reward": np.mean(list(episode_rewards.values())),
@@ -865,6 +972,7 @@ def collect_rollout(
                 "impostor_mean_reward": np.mean(impostor_rewards) if impostor_rewards else 0.0,
                 "impostor_ejected": impostor_ejected,
                 **comm_metrics,  # Add communication metrics
+                **accusation_metrics,  # Add accusation reward metrics
             })
             
             if debug_rewards and episode_stats is not None:
@@ -1073,7 +1181,20 @@ def make_env(args: Args) -> AegisEnv:
         config = GameConfig(**args.game_config, seed=args.seed)
     else:
         config = GameConfig(seed=args.seed)
-    return AegisEnv(config=config)
+    
+    # Enable event logging if configured
+    log_path = args.event_log_path
+    if log_path and args.log_events:
+        # Ensure directory exists
+        import os
+        os.makedirs(os.path.dirname(log_path) if os.path.dirname(log_path) else ".", exist_ok=True)
+    
+    return AegisEnv(
+        config=config,
+        log_events=args.log_events if args.log_events else False,
+        log_path=log_path if args.log_events else None,
+        log_event_types=args.log_event_types,
+    )
 
 
 def train(args: Args):
@@ -1092,11 +1213,11 @@ def train(args: Args):
     if args.role_rewards:
         rr = args.role_rewards
         print(f"Role-aware rewards enabled:")
-        print(f"  Survivor: win={rr.survivor_win}, task_step={rr.survivor_task_step}, "
+        print(f"Survivor: win={rr.survivor_win}, task_step={rr.survivor_task_step}, "
               f"team_task_step={rr.survivor_team_task_step}, "
               f"death={rr.survivor_death}, ejected={rr.survivor_ejected}, "
               f"ej_bonus={rr.survivor_ejection_bonus}, ej_pen={rr.survivor_ejection_penalty}")
-        print(f"  Impostor: win={rr.impostor_win}, kill={rr.impostor_kill}, "
+        print(f"Impostor: win={rr.impostor_win}, kill={rr.impostor_kill}, "
               f"kill_witness_penalty={rr.impostor_kill_witness_penalty}, "
               f"kill_early_penalty={rr.impostor_kill_early_penalty}, "
               f"proximity_penalty={rr.impostor_proximity_penalty}, "
@@ -1114,11 +1235,35 @@ def train(args: Args):
     action_dim = get_action_dim(env)
     
     print(f"Environment: {num_agents} agents")
-    print(f"  Observation dim: {obs_dim}")
-    print(f"  Action dim: {action_dim}")
+    print(f"Observation dim: {obs_dim}")
+    print(f"Action dim: {action_dim}")
+    if args.log_events and args.event_log_path:
+        print(f"Event logging: ENABLED -> {args.event_log_path}")
+        if args.log_event_types:
+            print(f"Filtered event types: {', '.join(args.log_event_types)}")
+        else:
+            print(f"Logging all event types")
+    else:
+        print(f"Event logging: DISABLED")
     print()
     
-    agent = ActorCritic(obs_dim, action_dim, args.hidden_dim).to(args.device)
+    # Get communication action offset from engine
+    comm_offset = env.engine.offset_comm if hasattr(env, 'engine') else 0
+    comm_exploration_boost = env.config.comm_exploration_boost if hasattr(env, 'config') else 0.5
+    comm_exploration_decay_steps = env.config.comm_exploration_decay_steps if hasattr(env, 'config') else 100000
+    
+    agent = ActorCritic(
+        obs_dim, 
+        action_dim, 
+        args.hidden_dim,
+        comm_offset=comm_offset,
+        comm_exploration_boost=comm_exploration_boost,
+        comm_exploration_decay_steps=comm_exploration_decay_steps
+    ).to(args.device)
+    
+    if comm_exploration_boost > 0:
+        print(f"Communication exploration boost: {comm_exploration_boost} (decays over {comm_exploration_decay_steps} steps)")
+        print(f"Communication action offset: {comm_offset}")
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
     
     buffer = RolloutBuffer(
@@ -1156,6 +1301,12 @@ def train(args: Args):
     all_failed_votes = []
     all_max_voting_scores = []
     
+    # Track accusation reward metrics (outcome-based communication rewards)
+    all_correct_accuse_survivor = []
+    all_false_accuse_survivor = []
+    all_correct_accuse_impostor = []
+    all_false_accuse_impostor = []
+    
     obs_dict, _ = env.reset()
     
     os.makedirs(args.checkpoint_dir, exist_ok=True)
@@ -1182,7 +1333,8 @@ def train(args: Args):
             )
             
             global_step += batch_size
-            num_updates += 1
+            num_updates += 1            
+            agent.global_step = global_step
             
             for ep_info in completed_episodes:
                 all_episode_rewards.append(ep_info["mean_reward"])
@@ -1213,6 +1365,13 @@ def train(args: Args):
                     # Track max voting scores (can be multiple per episode)
                     if ep_info["max_voting_scores"]:
                         all_max_voting_scores.extend(ep_info["max_voting_scores"])
+                
+                # Track accusation reward metrics
+                if "correct_accuse_survivor" in ep_info:
+                    all_correct_accuse_survivor.append(ep_info["correct_accuse_survivor"])
+                    all_false_accuse_survivor.append(ep_info["false_accuse_survivor"])
+                    all_correct_accuse_impostor.append(ep_info["correct_accuse_impostor"])
+                    all_false_accuse_impostor.append(ep_info["false_accuse_impostor"])
             
             if args.debug_rewards:
                 all_debug_stats.extend(episode_debug_stats)
@@ -1287,6 +1446,17 @@ def train(args: Args):
                 mean_failed_votes = np.mean(recent_failed_votes) if recent_failed_votes else 0.0
                 mean_max_voting_score = np.mean(recent_max_scores) if recent_max_scores else 0.0
                 
+                # Compute accusation reward metrics averages
+                recent_correct_accuse_survivor = all_correct_accuse_survivor[-100:] if all_correct_accuse_survivor else []
+                recent_false_accuse_survivor = all_false_accuse_survivor[-100:] if all_false_accuse_survivor else []
+                recent_correct_accuse_impostor = all_correct_accuse_impostor[-100:] if all_correct_accuse_impostor else []
+                recent_false_accuse_impostor = all_false_accuse_impostor[-100:] if all_false_accuse_impostor else []
+                
+                mean_correct_accuse_survivor = np.mean(recent_correct_accuse_survivor) if recent_correct_accuse_survivor else 0.0
+                mean_false_accuse_survivor = np.mean(recent_false_accuse_survivor) if recent_false_accuse_survivor else 0.0
+                mean_correct_accuse_impostor = np.mean(recent_correct_accuse_impostor) if recent_correct_accuse_impostor else 0.0
+                mean_false_accuse_impostor = np.mean(recent_false_accuse_impostor) if recent_false_accuse_impostor else 0.0
+                
                 if all_episode_rewards:
                     print(f"Episodes: {len(all_episode_rewards):5d} | "
                           f"Mean reward: {mean_reward:7.3f} | "
@@ -1335,6 +1505,16 @@ def train(args: Args):
                         "trust_question_avg_delta": float(mean_trust_question),
                         "failed_votes_low_confidence": float(mean_failed_votes),
                         "mean_max_voting_score": float(mean_max_voting_score),
+                    })
+                
+                # Add accusation reward metrics (outcome-based communication rewards)
+                # These are always tracked if debug_rewards is enabled
+                if recent_correct_accuse_survivor or recent_false_accuse_survivor or recent_correct_accuse_impostor or recent_false_accuse_impostor:
+                    log_entry.update({
+                        "correct_accuse_survivor": float(mean_correct_accuse_survivor),
+                        "false_accuse_survivor": float(mean_false_accuse_survivor),
+                        "correct_accuse_impostor": float(mean_correct_accuse_impostor),
+                        "false_accuse_impostor": float(mean_false_accuse_impostor),
                     })
                 
                 log_file.write(json.dumps(log_entry) + "\n")

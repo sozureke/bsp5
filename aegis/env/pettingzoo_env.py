@@ -44,12 +44,14 @@ class AegisEnv(ParallelEnv):
         render_mode: Optional[str] = None,
         log_events: bool = False,
         log_path: Optional[str] = None,
+        log_event_types: Optional[list[str]] = None,
     ):
         super().__init__()
         
         self.config = config or GameConfig()
         self.render_mode = render_mode
         self.log_events = log_events
+        self.log_event_types = set(log_event_types) if log_event_types else None  # None = log all, set for fast lookup
         
         # Initialize engine
         self.engine = StepEngine(self.config)
@@ -87,6 +89,10 @@ class AegisEnv(ParallelEnv):
         self.world: Optional[WorldState] = None
         self.agents: list[str] = []
         self._cumulative_rewards: dict[str, float] = {}
+        
+        # Diagnostic: Track communication action selection
+        self._comm_action_selections: int = 0
+        self._total_meeting_steps: int = 0
         
         # Latent suspicion scores (internal only, not exposed to agents)
         # Maps agent_id (int) -> suspicion score [0.0, 1.0]
@@ -137,6 +143,10 @@ class AegisEnv(ParallelEnv):
         # Reset cumulative rewards
         self._cumulative_rewards = {agent: 0.0 for agent in self.agents}
         
+        # Reset diagnostic counters
+        self._comm_action_selections = 0
+        self._total_meeting_steps = 0
+        
         # Reset metrics
         self.metrics = EpisodeMetrics()
         
@@ -157,10 +167,11 @@ class AegisEnv(ParallelEnv):
         if self.trust_manager is not None:
             self.trust_manager.reset(initial_trust=self.config.trust_initial_value)
         
-        # Log initial events
+        # Log initial events (with filtering)
         if self.event_writer:
             for event in init_events:
-                self.event_writer.write(event)
+                if self._should_log_event(event):
+                    self.event_writer.write(event)
         
         # Build observations
         observations = {}
@@ -199,6 +210,15 @@ class AegisEnv(ParallelEnv):
         
         old_world = self.world
         
+        if old_world.phase == Phase.MEETING:
+            self._total_meeting_steps += 1
+            for agent_name, action in actions.items():
+                if agent_name in self.agents:
+                    agent_id = self._name_to_agent_id(agent_name)
+                    action_type, param = self.engine.parse_action(action)
+                    if action_type == "comm_action":
+                        self._comm_action_selections += 1
+        
         # Update proximity tracking before step
         self._update_proximity_tracking(old_world)
         
@@ -220,7 +240,8 @@ class AegisEnv(ParallelEnv):
         
         if self.event_writer:
             for event in events:
-                self.event_writer.write(event)
+                if self._should_log_event(event):
+                    self.event_writer.write(event)
         
         # Update suspicion scores from events (after step, before rewards)
         self._update_suspicion_from_events(events, old_world, next_world)
@@ -236,7 +257,7 @@ class AegisEnv(ParallelEnv):
         
         self._update_metrics(events)
         
-        agent_events = self._extract_agent_events(events, next_world)
+        agent_events = self._extract_agent_events(events, old_world, next_world)
         
         rewards = self._compute_rewards(old_world, next_world, events, joint_actions)
         
@@ -274,6 +295,8 @@ class AegisEnv(ParallelEnv):
                 "did_report": agent_event_info.get("did_report", False),
                 "ejection_benefited": agent_event_info.get("ejection_benefited", False),
                 "ejection_penalized": agent_event_info.get("ejection_penalized", False),
+                "correct_accuse": agent_event_info.get("correct_accuse", False),
+                "false_accuse": agent_event_info.get("false_accuse", False),
             }
             
             # A3: Ensure elimination flags are mutually consistent
@@ -322,6 +345,7 @@ class AegisEnv(ParallelEnv):
     def _extract_agent_events(
         self,
         events: list[Event],
+        old_world: WorldState,
         next_world: WorldState,
     ) -> dict[str, dict]:
         """Extract per-agent event tags from step events."""
@@ -386,6 +410,25 @@ class AegisEnv(ParallelEnv):
                             agent_events[name]["ejection_benefited"] = True
                         else:
                             agent_events[name]["ejection_penalized"] = True
+                
+                # Outcome-based communication rewards: track accusations during the meeting
+                # Check which agents accused the ejected agent during the meeting
+                if old_world.meeting is not None:
+                    # Extract accusations from comm_actions during the meeting
+                    # comm_actions format: (tick, sender_id, action_id)
+                    for tick, sender_id, action_id in old_world.meeting.comm_actions:
+                        # Check if this is an ACCUSE action targeting the ejected agent
+                        accuse_target = CommVocab.get_accuse_target(action_id)
+                        if accuse_target == ejected_id:
+                            accuser_name = self._agent_id_to_name(sender_id)
+                            
+                            # Apply outcome-based reward:
+                            # - If ejected agent is IMPOSTOR: correct accusation (+reward)
+                            # - If ejected agent is SURVIVOR: false accusation (-penalty)
+                            if ejected_role == Role.IMPOSTOR:
+                                agent_events[accuser_name]["correct_accuse"] = True
+                            else:  # ejected_role == Role.SURVIVOR
+                                agent_events[accuser_name]["false_accuse"] = True
             
             elif event.event_type == EventType.WIN:
                 winner = Role(event.data["winner"])
@@ -763,6 +806,9 @@ class AegisEnv(ParallelEnv):
         - trust_weight = 1.0: pure trust-based voting
         - trust_weight in (0, 1): hybrid approach
         
+        During MEETING phase, adds noise to suspicion scores to make individual
+        observations insufficient for reliable voting decisions.
+        
         Returns:
             dict mapping agent_id -> voting score [0, 1]
         """
@@ -772,10 +818,22 @@ class AegisEnv(ParallelEnv):
         
         voting_scores = {}
         
+        # Check if we're in a meeting phase (add noise to suspicion)
+        in_meeting = self.world is not None and self.world.phase == Phase.MEETING
+        meeting_noise = self.config.meeting_suspicion_noise if in_meeting else 0.0
+        
         if self.trust_manager is None or self.config.trust_voting_weight == 0.0:
             # No trust integration, use pure suspicion scores
             for agent_id in range(self.config.num_agents):
-                voting_scores[agent_id] = self.suspicion_score[agent_id]
+                base_score = self.suspicion_score[agent_id]
+                
+                # Add noise during meetings to make individual suspicion unreliable
+                if meeting_noise > 0:
+                    # Add uniform noise: [-noise/2, +noise/2]
+                    noise = (self.engine._rng.random() - 0.5) * meeting_noise
+                    base_score = base_score + noise
+                
+                voting_scores[agent_id] = max(0.0, min(1.0, base_score))
         else:
             # Combine suspicion with trust-based distrust
             distrust_scores = self.trust_manager.get_distrust_scores()
@@ -783,6 +841,12 @@ class AegisEnv(ParallelEnv):
             
             for agent_id in range(self.config.num_agents):
                 suspicion = self.suspicion_score[agent_id]
+                
+                # Add noise to suspicion during meetings
+                if meeting_noise > 0:
+                    noise = (self.engine._rng.random() - 0.5) * meeting_noise
+                    suspicion = max(0.0, min(1.0, suspicion + noise))
+                
                 distrust = distrust_scores.get(agent_id, 0.5)
                 
                 # EXACT LINEAR COMBINATION (no nonlinear mixing)
@@ -885,6 +949,23 @@ class AegisEnv(ParallelEnv):
             print(result)
         
         return result
+    
+    def _should_log_event(self, event: Event) -> bool:
+        """
+        Check if event should be logged based on log_event_types filter.
+        
+        Args:
+            event: Event to check
+            
+        Returns:
+            True if event should be logged, False otherwise
+        """
+        # If no filter is set, log all events
+        if self.log_event_types is None:
+            return True
+        
+        # Check if event type is in the allowed list
+        return event.event_type.value in self.log_event_types
     
     def close(self) -> None:
         """Close the environment."""

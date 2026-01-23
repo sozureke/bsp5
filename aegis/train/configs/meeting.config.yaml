@@ -9,6 +9,7 @@ env:
   task_ticks_two_step: 3
   two_step_task_probability: 0.3
   kill_cooldown: 25
+  initial_kill_delay: 100 
   door_close_duration: 15
   door_cooldown: 40
   protect_evac_door: true
@@ -16,6 +17,7 @@ env:
   meeting_voting_ticks: 40
   evac_ticks_required: 5
   max_ticks: 600
+  min_episode_ticks_before_impostor_win: 250
   enable_knower: false
   max_messages_per_meeting: 10
   comm_mode: broadcast
@@ -29,8 +31,18 @@ env:
   trust_accuse_delta: -0.20         # Trust decrease from ACCUSE action (negative)
   trust_defend_delta: 0.05          # Trust increase from DEFEND_SELF
   trust_question_delta: -0.08       # Trust decrease from QUESTION (negative)
-  trust_voting_weight: 0.6          # Weight of trust in voting (0=no effect, 1=full effect)
-  voting_confidence_threshold: 0.4  # Minimum voting score to eject [0, 1] - forces evidence accumulation
+  trust_voting_weight: 0.6          
+  voting_confidence_threshold: 0.5  
+  
+  voting_noise_base: 0.5            
+  voting_noise_with_coordination: 0.05
+  voting_coordination_threshold: 2  
+  
+  comm_exploration_boost: 1.5      
+  comm_exploration_decay_steps: 1000000
+  
+  meeting_observation_degradation: 0.0  
+  meeting_suspicion_noise: 0.2  
 
 rewards:  
   survivor:
@@ -39,6 +51,8 @@ rewards:
     death: -0.4
     ejection_bonus: 0.25
     ejection_penalty: -0.15
+    correct_accuse: 0.1   
+    false_accuse: -0.05 
   
   impostor:
     win: 0.5 
@@ -50,6 +64,8 @@ rewards:
     ejected: -2.0
     ejection_bonus: 0.3
     ejection_penalty: -0.5
+    correct_accuse: 0.1   
+    false_accuse: -0.05  
 
 training:
   algorithm: PPO
@@ -62,7 +78,7 @@ training:
   rollout_steps: 128
   num_minibatches: 4
   lr: 0.0003
-  entropy_coeff: 0.01
+  entropy_coeff: 0.02  
   clip_param: 0.2
   clip_vloss: true
   vf_coef: 0.5
@@ -75,8 +91,8 @@ training:
     use_lstm: false
     lstm_cell_size: 256
     max_seq_len: 20
-  total_timesteps: 1000000
-  checkpoint_timesteps: 1000000
+  total_timesteps: 2000000
+  checkpoint_timesteps: 2000000
   evaluation_interval: 25
   evaluation_num_episodes: 10
 
@@ -89,6 +105,14 @@ logging:
   checkpoint_dir: ./checkpoints
   debug_rewards: true
   debug_rewards_interval: 10
+  log_events: true  # Enable detailed event logging (meetings, communications, etc.)
+  event_log_path: ./checkpoints/events.jsonl  # Path for event log file
+  log_event_types:  # Filter: only log these event types (empty list = log all)
+    - meeting_summary
+    - kill
+    - ejection
+    - win
+    - report
 
 ablations:
   disable_communication: false

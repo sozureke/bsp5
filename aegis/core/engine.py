@@ -25,6 +25,7 @@ from aegis.core.events import (
     report_event,
     meeting_start_event,
     meeting_end_event,
+    meeting_summary_event,
     vote_cast_event,
     ejection_event,
     vote_failed_event,
@@ -435,6 +436,10 @@ class StepEngine:
         """Apply kill actions."""
         events = []
         
+        # Check if initial kill delay has passed
+        if world.tick < self.config.initial_kill_delay:
+            return events  # No kills allowed before initial delay
+        
         for agent_id, action in joint_actions.items():
             agent = world.agents[agent_id]
             if not agent.alive or agent.role != Role.IMPOSTOR:
@@ -503,6 +508,7 @@ class StepEngine:
                         reporter_id=agent_id,
                         body_location=agent.room,
                         body_agent_id=body_in_room.agent_id,
+                        tick_start=world.tick,  # Track when meeting started for logging
                     )
                     
                     # Remove the reported body
@@ -608,10 +614,44 @@ class StepEngine:
                 # Communication actions for trust system
                 comm_action_id = param
                 world.meeting.comm_actions.append((world.tick, agent_id, comm_action_id))
-                # Log communication action event
+                # Log communication action event with full context for scientific analysis
                 from aegis.comms.actions import CommVocab
                 action_name = CommVocab.action_to_string(comm_action_id)
-                events.append(comm_action_event(world.tick, agent_id, comm_action_id, action_name))
+                
+                # Extract target information if applicable
+                target_id = None
+                if CommVocab.is_support(comm_action_id):
+                    target_id = CommVocab.get_support_target(comm_action_id)
+                elif CommVocab.is_accuse(comm_action_id):
+                    target_id = CommVocab.get_accuse_target(comm_action_id)
+                elif CommVocab.is_question(comm_action_id):
+                    target_id = CommVocab.get_question_target(comm_action_id)
+                
+                # Get roles for sender and target
+                sender_role = int(agent.role)
+                target_role = None
+                if target_id is not None and target_id < len(world.agents):
+                    target_agent = world.agents.get(target_id)
+                    if target_agent is not None:
+                        target_role = int(target_agent.role)
+                
+                # Find meeting start tick (first tick of current meeting phase)
+                meeting_tick_start = None
+                # We need to track when meeting started - check if we can infer from phase
+                # For now, we'll use the reporter_id and body_location from meeting state
+                
+                events.append(comm_action_event(
+                    tick=world.tick,
+                    sender_id=agent_id,
+                    action_id=comm_action_id,
+                    action_name=action_name,
+                    sender_role=sender_role,
+                    target_id=target_id,
+                    target_role=target_role,
+                    meeting_tick_start=world.meeting.tick_start,
+                    meeting_reporter_id=world.meeting.reporter_id,
+                    meeting_body_room=world.meeting.body_location,
+                ))
         
         return events
     
@@ -658,11 +698,16 @@ class StepEngine:
         Resolve voting and potentially eject someone.
         
         Voting mechanism: Probabilistic selection based on voting scores.
-        P(eject agent i) ∝ voting_score[i] with small uniform noise.
+        P(eject agent i) ∝ voting_score[i] with noise that depends on coordination.
         
         Voting Confidence Gating:
         - Only agents with voting_score >= voting_confidence_threshold are eligible
         - This forces evidence accumulation via communication
+        
+        Coordination-Based Noise Reduction:
+        - Without coordination (few ACCUSE actions on same target): high voting noise
+        - With coordination (multiple ACCUSE actions on same target): reduced noise
+        - This makes ACCUSE actions structurally necessary for reliable voting
         
         This is environment-internal causal memory - agents do not have direct
         access to voting scores. Voting is NOT trained by agents.
@@ -677,6 +722,26 @@ class StepEngine:
         
         if world.meeting is None:
             return events
+        
+        # Count ACCUSE actions per target to detect coordination
+        from aegis.comms.actions import CommVocab
+        accuse_counts: dict[int, int] = {}  # target_id -> count of ACCUSE actions
+        for tick, sender_id, action_id in world.meeting.comm_actions:
+            if CommVocab.is_accuse(action_id):
+                target_id = CommVocab.get_accuse_target(action_id)
+                if target_id is not None:
+                    accuse_counts[target_id] = accuse_counts.get(target_id, 0) + 1
+        
+        # Determine noise level based on coordination
+        # Find the target with most accusations
+        max_accusations = max(accuse_counts.values()) if accuse_counts else 0
+        has_coordination = max_accusations >= self.config.voting_coordination_threshold
+        
+        # Set noise level: high without coordination, low with coordination
+        if has_coordination:
+            voting_noise = self.config.voting_noise_with_coordination
+        else:
+            voting_noise = self.config.voting_noise_base
         
         # Count base votes
         vote_counts: dict[Optional[int], int] = {}
@@ -709,11 +774,14 @@ class StepEngine:
                     eligible_scores.append(score)
             
             if eligible_candidates:
-                # Add noise for tie-breaking
+                # Add noise based on coordination level
+                # High noise without coordination makes voting unreliable
+                # Low noise with coordination makes voting more reliable
                 noisy_scores = []
                 for score in eligible_scores:
-                    noise = self._rng.uniform(0.0, 0.1)
-                    noisy_scores.append(score + noise)
+                    # Add noise: uniform in [-voting_noise/2, +voting_noise/2]
+                    noise = self._rng.uniform(-voting_noise / 2, voting_noise / 2)
+                    noisy_scores.append(max(0.0, min(1.0, score + noise)))
                 
                 total_weight = sum(noisy_scores)
                 if total_weight > 0:
@@ -736,21 +804,79 @@ class StepEngine:
                     len(alive_agent_ids)
                 ))
         else:
-            # Fallback: deterministic vote counting (when suspicion_scores not provided)
-            max_votes = max(vote_counts.values()) if vote_counts else 0
-            max_targets = [t for t, v in vote_counts.items() if v == max_votes]
-            if len(max_targets) == 1 and max_targets[0] is not None:
-                ejected_id = max_targets[0]
+            if has_coordination:
+                max_votes = max(vote_counts.values()) if vote_counts else 0
+                max_targets = [t for t, v in vote_counts.items() if v == max_votes]
+                if len(max_targets) == 1 and max_targets[0] is not None:
+                    ejected_id = max_targets[0]
+            else:
+                noisy_vote_counts = {}
+                for target, count in vote_counts.items():
+                    max_vote_value = max(vote_counts.values()) if vote_counts else 1
+                    noise_offset = int(self._rng.uniform(-voting_noise * max_vote_value, voting_noise * max_vote_value))
+                    noisy_vote_counts[target] = max(0, count + noise_offset)
+                
+                max_votes = max(noisy_vote_counts.values()) if noisy_vote_counts else 0
+                max_targets = [t for t, v in noisy_vote_counts.items() if v == max_votes]
+                if len(max_targets) == 1 and max_targets[0] is not None:
+                    ejected_id = max_targets[0]
         
         # Eject the selected agent (if eligible)
+        ejected_role = None
         if ejected_id is not None:
             ejected = world.agents[ejected_id]
             ejected.alive = False
+            ejected_role = int(ejected.role)
             # No body created for ejection
             events.append(ejection_event(
                 world.tick, ejected_id, ejected.role,
                 {k: v for k, v in world.meeting.votes.items()}
             ))
+        
+        # Create meeting summary event with all communications and voting results
+        # This is useful for scientific analysis: complete meeting context in one event
+        from aegis.comms.actions import CommVocab
+        comm_actions_summary = []
+        for tick, sender_id, action_id in world.meeting.comm_actions:
+            action_name = CommVocab.action_to_string(action_id)
+            sender_agent = world.agents.get(sender_id)
+            sender_role = int(sender_agent.role) if sender_agent else None
+            
+            # Extract target info
+            target_id = None
+            target_role = None
+            if CommVocab.is_support(action_id):
+                target_id = CommVocab.get_support_target(action_id)
+            elif CommVocab.is_accuse(action_id):
+                target_id = CommVocab.get_accuse_target(action_id)
+            elif CommVocab.is_question(action_id):
+                target_id = CommVocab.get_question_target(action_id)
+            
+            if target_id is not None and target_id < len(world.agents):
+                target_agent = world.agents.get(target_id)
+                if target_agent:
+                    target_role = int(target_agent.role)
+            
+            comm_actions_summary.append({
+                "tick": tick,
+                "sender_id": sender_id,
+                "sender_role": sender_role,
+                "action_id": action_id,
+                "action_name": action_name,
+                "target_id": target_id,
+                "target_role": target_role,
+            })
+        
+        events.append(meeting_summary_event(
+            tick=world.tick,
+            meeting_tick_start=world.meeting.tick_start,
+            reporter_id=world.meeting.reporter_id,
+            body_room=world.meeting.body_location,
+            comm_actions=comm_actions_summary,
+            votes={k: v for k, v in world.meeting.votes.items()},
+            ejected_id=ejected_id,
+            ejected_role=ejected_role,
+        ))
         
         # End meeting
         events.append(meeting_end_event(world.tick))
@@ -797,15 +923,18 @@ class StepEngine:
         alive_survivors = world.alive_survivors()
         alive_impostors = world.alive_impostors()
         
+        # Environment constraint: impostor cannot win too early (gives survivors time to coordinate)
+        can_impostor_win = world.tick >= self.config.min_episode_ticks_before_impostor_win
+        
         # Impostor win: alive impostors >= alive survivors
-        if len(alive_impostors) >= len(alive_survivors) and len(alive_survivors) > 0:
+        if can_impostor_win and len(alive_impostors) >= len(alive_survivors) and len(alive_survivors) > 0:
             world.terminated = True
             world.winner = Role.IMPOSTOR
             events.append(win_event(world.tick, Role.IMPOSTOR, "impostor_parity"))
             return events
         
         # All survivors dead
-        if len(alive_survivors) == 0:
+        if can_impostor_win and len(alive_survivors) == 0:
             world.terminated = True
             world.winner = Role.IMPOSTOR
             events.append(win_event(world.tick, Role.IMPOSTOR, "all_survivors_dead"))

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional, TextIO
+from typing import Optional, TextIO, Any
 from datetime import datetime
+
+import numpy as np
 
 from aegis.core.events import Event
 
@@ -39,10 +41,27 @@ class EventWriter:
             self._file = open(self.path, "a")
         return self._file
     
+    @staticmethod
+    def _convert_to_json_serializable(obj: Any) -> Any:
+        """Recursively convert NumPy types and other non-serializable types to native Python types."""
+        if isinstance(obj, (np.integer, np.floating)):
+            return obj.item()
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, dict):
+            return {key: EventWriter._convert_to_json_serializable(value) for key, value in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [EventWriter._convert_to_json_serializable(item) for item in obj]
+        else:
+            return obj
+    
     def write(self, event: Event) -> None:
         """Write an event to the log."""
         f = self._ensure_open()
-        f.write(json.dumps(event.to_dict()) + "\n")
+        event_dict = event.to_dict()
+        # Convert NumPy types to native Python types for JSON serialization
+        serializable_dict = self._convert_to_json_serializable(event_dict)
+        f.write(json.dumps(serializable_dict) + "\n")
         self._event_count += 1
     
     def write_many(self, events: list[Event]) -> None:

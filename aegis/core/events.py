@@ -31,6 +31,7 @@ class EventType(str, Enum):
     EVAC_PROGRESS = "evac_progress"
     WIN = "win"
     KNOWER_REVEAL = "knower_reveal"
+    MEETING_SUMMARY = "meeting_summary"  # Summary of meeting with all communications and voting results
 
 
 @dataclass
@@ -108,8 +109,54 @@ def message_sent_event(tick: int, sender_id: int, token_id: int) -> Event:
     return make_event(EventType.MESSAGE_SENT, tick, sender_id=sender_id, token_id=token_id)
 
 
-def comm_action_event(tick: int, sender_id: int, action_id: int, action_name: str) -> Event:
-    return make_event(EventType.COMM_ACTION, tick, sender_id=sender_id, action_id=action_id, action_name=action_name)
+def comm_action_event(
+    tick: int, 
+    sender_id: int, 
+    action_id: int, 
+    action_name: str,
+    sender_role: Optional[int] = None,
+    target_id: Optional[int] = None,
+    target_role: Optional[int] = None,
+    meeting_tick_start: Optional[int] = None,
+    meeting_reporter_id: Optional[int] = None,
+    meeting_body_room: Optional[int] = None,
+) -> Event:
+    """
+    Create a communication action event with full context for scientific analysis.
+    
+    Args:
+        tick: Current game tick
+        sender_id: Agent who sent the communication
+        action_id: Communication action ID
+        action_name: Human-readable action name (e.g., "ACCUSE(1)")
+        sender_role: Role of sender (0=survivor, 1=impostor)
+        target_id: Target agent ID (if applicable, e.g., for ACCUSE/SUPPORT/QUESTION)
+        target_role: Role of target (0=survivor, 1=impostor, if applicable)
+        meeting_tick_start: Tick when current meeting started
+        meeting_reporter_id: Agent who reported the body (triggered meeting)
+        meeting_body_room: Room where the body was found
+    """
+    data = {
+        "sender_id": sender_id,
+        "action_id": action_id,
+        "action_name": action_name,
+    }
+    
+    # Add optional context fields
+    if sender_role is not None:
+        data["sender_role"] = sender_role
+    if target_id is not None:
+        data["target_id"] = target_id
+    if target_role is not None:
+        data["target_role"] = target_role
+    if meeting_tick_start is not None:
+        data["meeting_tick_start"] = meeting_tick_start
+    if meeting_reporter_id is not None:
+        data["meeting_reporter_id"] = meeting_reporter_id
+    if meeting_body_room is not None:
+        data["meeting_body_room"] = meeting_body_room
+    
+    return make_event(EventType.COMM_ACTION, tick, **data)
 
 
 def move_event(tick: int, agent_id: int, from_room: int, to_room: int) -> Event:
@@ -134,4 +181,43 @@ def win_event(tick: int, winner: int, reason: str) -> Event:
 
 def knower_reveal_event(tick: int, knower_id: int, target_id: int, target_role: int) -> Event:
     return make_event(EventType.KNOWER_REVEAL, tick, knower_id=knower_id, target_id=target_id, target_role=target_role)
+
+
+def meeting_summary_event(
+    tick: int,
+    meeting_tick_start: int,
+    reporter_id: int,
+    body_room: int,
+    comm_actions: list[dict],
+    votes: dict[int, Optional[int]],
+    ejected_id: Optional[int] = None,
+    ejected_role: Optional[int] = None,
+) -> Event:
+    """
+    Create a meeting summary event with all communications and voting results.
+    
+    Useful for scientific analysis: shows complete meeting context, all communications,
+    and final outcome in one event.
+    
+    Args:
+        tick: Current tick (end of meeting)
+        meeting_tick_start: Tick when meeting started
+        reporter_id: Agent who reported the body
+        body_room: Room where body was found
+        comm_actions: List of communication actions during meeting (with full context)
+        votes: Final votes cast (voter_id -> target_id or None)
+        ejected_id: Agent who was ejected (if any)
+        ejected_role: Role of ejected agent (0=survivor, 1=impostor, if applicable)
+    """
+    return make_event(
+        EventType.MEETING_SUMMARY,
+        tick,
+        meeting_tick_start=meeting_tick_start,
+        reporter_id=reporter_id,
+        body_room=body_room,
+        comm_actions=comm_actions,
+        votes=votes,
+        ejected_id=ejected_id,
+        ejected_role=ejected_role,
+    )
 

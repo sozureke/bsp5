@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 import numpy as np
+import random
 
 from aegis.core.world import WorldState, Phase, Role
 from aegis.core.rules import GameConfig
@@ -26,6 +27,7 @@ class ObservationBuilder:
         self.max_bodies = config.num_agents
         self.max_messages = 50
         self.max_tasks = config.tasks_per_survivor
+        self._rng = random.Random(config.seed if config.seed is not None else 42)
     
     def build(self, world: WorldState, agent_id: int) -> dict:
         """Build observation dictionary for an agent."""
@@ -45,7 +47,23 @@ class ObservationBuilder:
         # Visible agents
         visible_agents = np.zeros((self.num_agents, 3), dtype=np.int32)
         if agent.alive:
-            visible_set = self.engine.get_visible_agents(world, agent_id)
+            # During meetings, degrade observation quality
+            if world.phase == Phase.MEETING and self.config.meeting_observation_degradation > 0:
+                # Reduce visibility: only see agents in same room during meetings
+                degradation_factor = self.config.meeting_observation_degradation
+                visible_set = set()
+                for other_id, other in world.agents.items():
+                    if other_id == agent_id:
+                        # Always see self
+                        visible_set.add(other_id)
+                    elif other.alive and other.room == agent.room:
+                        # Only see agents in same room during meetings (with some probability based on degradation)
+                        if self._rng.random() >= degradation_factor:
+                            visible_set.add(other_id)
+            else:
+                # Normal visibility during FREE_PLAY and VOTING
+                visible_set = self.engine.get_visible_agents(world, agent_id)
+            
             for other_id, other in world.agents.items():
                 if other_id == agent_id:
                     # Always see self
@@ -59,7 +77,14 @@ class ObservationBuilder:
         visible_bodies = np.full((self.max_bodies, 3), -1, dtype=np.int32)
         visible_bodies[:, 0] = 0  # Not seen
         if agent.alive:
-            visible_body_list = self.engine.get_visible_bodies(world, agent_id)
+            if world.phase == Phase.MEETING and self.config.meeting_observation_degradation > 0:
+                visible_body_list = [
+                    b for b in world.bodies 
+                    if b.room == agent.room and self._rng.random() >= self.config.meeting_observation_degradation
+                ]
+            else:
+                visible_body_list = self.engine.get_visible_bodies(world, agent_id)
+            
             for i, body in enumerate(visible_body_list[:self.max_bodies]):
                 age = world.tick - body.tick_killed
                 visible_bodies[i] = [1, body.room, age]

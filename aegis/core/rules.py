@@ -1,5 +1,3 @@
-"""Constants and configuration for the game."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -28,6 +26,7 @@ class GameConfig:
     
     # Kill settings
     kill_cooldown: int = 30
+    initial_kill_delay: int = 0  # Minimum ticks before first kill is allowed (gives survivors time to coordinate)
     
     # Door settings
     door_close_duration: int = 15
@@ -41,6 +40,7 @@ class GameConfig:
     # Win conditions
     evac_ticks_required: int = 5  # Consecutive ticks in evac room to win
     max_ticks: int = 1000  # Episode timeout
+    min_episode_ticks_before_impostor_win: int = 0  # Minimum ticks before impostor can win (environment constraint, not reward)
     
     # Knower modifier
     enable_knower: bool = False
@@ -67,6 +67,18 @@ class GameConfig:
     
     # Suspicion settings
     suspicion_delay_ticks: int = 30  # Delay before suspicion becomes active
+    
+    # Communication exploration boost (to encourage initial exploration)
+    comm_exploration_boost: float = 0.5  # Boost logits for communication actions during meetings to encourage exploration [0, 2]
+    comm_exploration_decay_steps: int = 100000  # Steps over which exploration boost decays to 0
+    
+    meeting_observation_degradation: float = 0.0  # Reduce visibility radius during meetings [0, 1] (0 = no degradation, 1 = complete degradation)
+    meeting_suspicion_noise: float = 0.0  # Add noise to suspicion scores during meetings [0, 1] (makes individual suspicion unreliable, forces communication)
+    
+    # Voting noise without coordination
+    voting_noise_base: float = 0.0  # Base noise level for voting when no coordination [0, 1]
+    voting_coordination_threshold: int = 2  # Minimum number of ACCUSE actions on same target to reduce noise
+    voting_noise_with_coordination: float = 0.0  # Reduced noise when coordination exists [0, 1]
     
     # Rewards
     reward_win: float = 1.0
