@@ -3,7 +3,7 @@ env:
   num_impostors: 2
   num_rooms: 9
   evac_room: 4
-  vision_radius: 2
+  vision_radius: 1
   tasks_per_survivor: 4
   task_ticks_single: 5
   task_ticks_two_step: 3
@@ -24,25 +24,25 @@ env:
   memory_mode: none
   suspicion_delay_ticks: 30
   
-  enable_trust_comm: false
-  trust_delay_ticks: 5
+  enable_trust_comm: true
+  trust_delay_ticks: 1
   trust_initial_value: 0.5
-  trust_support_delta: 0.0
-  trust_accuse_delta: 0.0
-  trust_defend_delta: 0.0
-  trust_question_delta: 0.0
+  trust_support_delta: 0.15
+  trust_accuse_delta: -0.20
+  trust_defend_delta: 0.05
+  trust_question_delta: -0.08
   trust_voting_weight: 0.6
   voting_confidence_threshold: 0.5
   
-  voting_noise_base: 0.0
-  voting_noise_with_coordination: 0.0
-  voting_coordination_threshold: 0
+  voting_noise_base: 0.5
+  voting_noise_with_coordination: 0.05
+  voting_coordination_threshold: 2
   
-  comm_exploration_boost: 0.0
-  comm_exploration_decay_steps: 0
+  comm_exploration_boost: 1.5
+  comm_exploration_decay_steps: 1000000
   
   meeting_observation_degradation: 0.0
-  meeting_suspicion_noise: 0.0
+  meeting_suspicion_noise: 0.2
 
 rewards:
   survivor:
@@ -51,8 +51,8 @@ rewards:
     death: -0.4
     ejection_bonus: 0.25
     ejection_penalty: -0.15
-    correct_accuse: 0.0
-    false_accuse: 0.0
+    correct_accuse: 0.1
+    false_accuse: -0.05
   
   impostor:
     win: 0.5
@@ -64,8 +64,8 @@ rewards:
     ejected: -2.0
     ejection_bonus: 0.3
     ejection_penalty: -0.5
-    correct_accuse: 0.0
-    false_accuse: 0.0
+    correct_accuse: 0.1
+    false_accuse: -0.05
 
 training:
   algorithm: PPO
@@ -102,7 +102,7 @@ logging:
   wandb_entity: null
   log_level: INFO
   log_interval: 10
-  experiment_name: E2_trust_only
+  experiment_name: E2_fov_low
   checkpoint_dir: ./checkpoints
   debug_rewards: true
   debug_rewards_interval: 10

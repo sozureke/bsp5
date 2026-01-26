@@ -102,7 +102,7 @@ logging:
   wandb_entity: null
   log_level: INFO
   log_interval: 10
-  experiment_name: E6_fov_high
+  experiment_name: E2_fov_high
   checkpoint_dir: ./checkpoints
   debug_rewards: true
   debug_rewards_interval: 10
@@ -118,4 +118,3 @@ ablations:
   disable_communication: false
   disable_doors: false
   random_impostor: false
-

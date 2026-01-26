@@ -1,5 +1,3 @@
-"""Discrete communication actions for trust-based interaction."""
-
 from __future__ import annotations
 
 from enum import IntEnum
@@ -102,7 +100,7 @@ class CommVocab:
     def action_to_string(cls, action_id: int) -> str:
         """Convert action ID to human-readable string."""
         if action_id == cls.NO_OP:
-            return "NO_OP"
+            return  "NO_OP"
         elif cls.is_support(action_id):
             target = cls.get_support_target(action_id)
             return f"SUPPORT({target})"
@@ -110,7 +108,7 @@ class CommVocab:
             target = cls.get_accuse_target(action_id)
             return f"ACCUSE({target})"
         elif cls.is_defend(action_id):
-            return "DEFEND_SELF"
+            return  "DEFEND_SELF"
         elif cls.is_question(action_id):
             target = cls.get_question_target(action_id)
             return f"QUESTION({target})"

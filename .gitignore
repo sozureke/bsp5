@@ -152,6 +152,7 @@ logs/
 
 # Large result files
 result.txt
+results/
 
 # Local development
 .cursor/

@@ -31,10 +31,10 @@ env:
   trust_accuse_delta: -0.20
   trust_defend_delta: 0.05
   trust_question_delta: -0.08
-  trust_voting_weight: 0.6
-  voting_confidence_threshold: 0.5
+  trust_voting_weight: 0.3
+  voting_confidence_threshold: 0.4
   
-  voting_noise_base: 0.5
+  voting_noise_base: 0.1
   voting_noise_with_coordination: 0.05
   voting_coordination_threshold: 2
   
@@ -42,7 +42,7 @@ env:
   comm_exploration_decay_steps: 1000000
   
   meeting_observation_degradation: 0.0
-  meeting_suspicion_noise: 0.2
+  meeting_suspicion_noise: 0.1
 
 rewards:
   survivor:
