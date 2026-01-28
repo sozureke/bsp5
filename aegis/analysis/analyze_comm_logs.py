@@ -18,7 +18,7 @@ def analyze_comm_actions(log_path: str):
     
     if not comm_events:
         print("\nNo communication action events found in log.")
-        print(" Make sure enable_trust_comm=true in your config.")
+        print("Make sure enable_trust_comm=true in your config.")
         return
     
     print(f"\nFound {len(comm_events)} communication actions\n")
@@ -29,14 +29,14 @@ def analyze_comm_actions(log_path: str):
     action_counts = Counter(e["action_name"] for e in comm_events)
     for action_name, count in action_counts.most_common():
         percentage = (count / len(comm_events)) * 100
-        print(f"  {action_name:20s}: {count:4d} ({percentage:5.1f}%)")
+        print(f"{action_name:20s}: {count:4d} ({percentage:5.1f}%)")
     
 
     print("\n2. Communication by Agent")
     print("-" * 70)
     agent_counts = Counter(e["sender_id"] for e in comm_events)
     for agent_id, count in sorted(agent_counts.items()):
-        print(f"  Agent {agent_id}: {count:4d} actions")
+        print(f"Agent {agent_id}: {count:4d} actions")
     
 
     print("\n3. Temporal Distribution")
@@ -44,17 +44,17 @@ def analyze_comm_actions(log_path: str):
     ticks = [e["tick"] for e in comm_events]
     if ticks:
         min_tick, max_tick = min(ticks), max(ticks)
-        print(f"  First action: tick {min_tick}")
-        print(f"  Last action:  tick {max_tick}")
-        print(f"  Duration:     {max_tick - min_tick} ticks")
+        print(f"First action: tick {min_tick}")
+        print(f"Last action:  tick {max_tick}")
+        print(f"Duration:     {max_tick - min_tick} ticks")
         
 
         early = sum(1 for t in ticks if t < max_tick / 3)
         mid = sum(1 for t in ticks if max_tick / 3 <= t < 2 * max_tick / 3)
         late = sum(1 for t in ticks if t >= 2 * max_tick / 3)
-        print(f"\n  Early game: {early} ({(early/len(ticks))*100:.1f}%)")
-        print(f"  Mid game:   {mid} ({(mid/len(ticks))*100:.1f}%)")
-        print(f"  Late game:  {late} ({(late/len(ticks))*100:.1f}%)")
+        print(f"\nEarly game: {early} ({(early/len(ticks))*100:.1f}%)")
+        print(f"Mid game:   {mid} ({(mid/len(ticks))*100:.1f}%)")
+        print(f"Late game:  {late} ({(late/len(ticks))*100:.1f}%)")
     
 
     print("\n4. Target Analysis")
@@ -81,7 +81,7 @@ def analyze_comm_actions(log_path: str):
     for target_id in sorted(targets.keys()):
         counts = targets[target_id]
         total = sum(counts.values())
-        print(f"  Agent {target_id}: "
+        print(f"Agent {target_id}: "
               f"SUPPORT={counts['support']}, "
               f"ACCUSE={counts['accuse']}, "
               f"QUESTION={counts['question']} "
@@ -106,11 +106,11 @@ def analyze_comm_actions(log_path: str):
             patterns[pattern] += 1
     
     if patterns:
-        print("  Most common action transitions:")
+        print("Most common action transitions:")
         for pattern, count in patterns.most_common(5):
-            print(f"    {pattern}: {count} times")
+            print(f"{pattern}: {count} times")
     else:
-        print("  No repeated patterns found (single actions per agent)")
+        print("No repeated patterns found (single actions per agent)")
     
     print("\n" + "=" * 70)
 

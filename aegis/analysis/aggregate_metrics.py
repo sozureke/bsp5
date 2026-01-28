@@ -121,10 +121,10 @@ def main():
     total = len(all_metrics)
     
     print(f"\nSummary:")
-    print(f"  Survivor wins: {survivor_wins}/{total} ({100*survivor_wins/total:.1f}%)")
-    print(f"  Impostor wins: {impostor_wins}/{total} ({100*impostor_wins/total:.1f}%)")
-    print(f"  Avg ticks: {sum(m['total_ticks'] for m in all_metrics)/total:.1f}")
-    print(f"  Avg kills: {sum(m['kills'] for m in all_metrics)/total:.2f}")
+    print(f"Survivor wins: {survivor_wins}/{total} ({100*survivor_wins/total:.1f}%)")
+    print(f"Impostor wins: {impostor_wins}/{total} ({100*impostor_wins/total:.1f}%)")
+    print(f"Avg ticks: {sum(m['total_ticks'] for m in all_metrics)/total:.1f}")
+    print(f"Avg kills: {sum(m['kills'] for m in all_metrics)/total:.2f}")
 
 
 if __name__ == "__main__":

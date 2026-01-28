@@ -37,7 +37,7 @@ def merge_events(experiment_dir: Path, output_file: str = None) -> Path:
             continue
         
         seed = seed_dir.name.replace("seed_", "")
-        print(f"  Loading {seed_dir.name}...", end=" ")
+        print(f"Loading {seed_dir.name}...", end=" ")
         
         with open(events_file, "r") as f:
             count = 0
@@ -78,10 +78,10 @@ def main():
         epilog="""
 Examples:
   # Merge events from all seeds in E1_baseline
-  python -m aegis.scripts.merge_events checkpoints/E1_baseline
+  python -m aegis.analysis.merge_events checkpoints/E1_baseline
 
   # Merge and specify output file
-  python -m aegis.scripts.merge_events checkpoints/E1_baseline -o checkpoints/E1_baseline/merged.jsonl
+  python -m aegis.analysis.merge_events checkpoints/E1_baseline -o checkpoints/E1_baseline/merged.jsonl
         """
     )
     
@@ -102,13 +102,13 @@ Examples:
     
     try:
         output_path = merge_events(Path(args.experiment_dir), args.output)
-        print(f"\n✓ Success! Merged events available at: {output_path}")
+        print(f"\nSuccess! Merged events available at: {output_path}")
         print(f"\nYou can now analyze with:")
-        print(f"  python -m aegis.scripts.analyze_events {output_path} --summary")
+        print(f"python -m aegis.analysis.analyze_events {output_path} --summary")
         return 0
     except Exception as e:
-        print(f"\n✗ Error: {e}", file=sys.stderr)
-        return 1
+        print(f"\nError: {e}", file=sys.stderr)
+        return 
 
 
 if __name__ == "__main__":

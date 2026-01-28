@@ -53,8 +53,8 @@ def evaluate(
     agent.eval()
     
     print(f"Loaded checkpoint: {checkpoint_path}")
-    print(f"  Global step: {checkpoint.get('global_step',  'N/A')}")
-    print(f"  Num updates: {checkpoint.get('num_updates',  'N/A')}")
+    print(f"Global step: {checkpoint.get('global_step',  'N/A')}")
+    print(f"Num updates: {checkpoint.get('num_updates',  'N/A')}")
     print()
     
 

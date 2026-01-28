@@ -83,15 +83,15 @@ class EventAnalyzer:
         event_types = Counter(e.get("event_type") for e in self.events)
         print(f"\nEvent Types:")
         for event_type, count in event_types.most_common():
-            print(f"  {event_type:25s}: {count:6d}")
+            print(f"{event_type:25s}: {count:6d}")
         
 
         if self.meetings:
             print(f"\nMeeting Statistics:")
-            print(f"  Total meetings: {len(self.meetings)}")
-            print(f"  Meetings with ejections: {sum(1 for m in self.meetings if m.has_ejection)}")
-            print(f"  Average duration: {sum(m.duration for m in self.meetings) / len(self.meetings):.1f} ticks")
-            print(f"  Average comm actions per meeting: {sum(m.num_comm_actions for m in self.meetings) / len(self.meetings):.1f}")
+            print(f"Total meetings: {len(self.meetings)}")
+            print(f"Meetings with ejections: {sum(1 for m in self.meetings if m.has_ejection)}")
+            print(f"Average duration: {sum(m.duration for m in self.meetings) / len(self.meetings):.1f} ticks")
+            print(f"Average comm actions per meeting: {sum(m.num_comm_actions for m in self.meetings) / len(self.meetings):.1f}")
             
 
             all_comm_actions = []
@@ -102,27 +102,27 @@ class EventAnalyzer:
                 action_types = Counter(a.get("action_name",  "UNKNOWN") for a in all_comm_actions)
                 print(f"\nCommunication Actions:")
                 for action, count in action_types.most_common():
-                    print(f"  {action:20s}: {count:6d}")
+                    print(f"{action:20s}: {count:6d}")
                 
 
                 survivor_actions = [a for a in all_comm_actions if a.get("sender_role") == 0]
                 impostor_actions = [a for a in all_comm_actions if a.get("sender_role") == 1]
                 
                 print(f"\nActions by Role:")
-                print(f"  Survivors: {len(survivor_actions)} actions")
-                print(f"  Impostors: {len(impostor_actions)} actions")
+                print(f"Survivors: {len(survivor_actions)} actions")
+                print(f"Impostors: {len(impostor_actions)} actions")
                 
                 if survivor_actions:
                     surv_action_types = Counter(a.get("action_name") for a in survivor_actions)
-                    print(f"\n  Survivor action distribution:")
+                    print(f"\nSurvivor action distribution:")
                     for action, count in surv_action_types.most_common(5):
-                        print(f"    {action:20s}: {count:6d}")
+                        print(f"{action:20s}: {count:6d}")
                 
                 if impostor_actions:
                     imp_action_types = Counter(a.get("action_name") for a in impostor_actions)
-                    print(f"\n  Impostor action distribution:")
+                    print(f"\nImpostor action distribution:")
                     for action, count in imp_action_types.most_common(5):
-                        print(f"    {action:20s}: {count:6d}")
+                        print(f"{action:20s}: {count:6d}")
         
 
         win_events = [e for e in self.events if e.get("event_type") ==  "win"]
@@ -131,7 +131,7 @@ class EventAnalyzer:
             print(f"\nGame Outcomes:")
             for winner, count in winners.items():
                 winner_name =  "SURVIVORS" if winner == 0 else  "IMPOSTORS"
-                print(f"  {winner_name}: {count}")
+                print(f"{winner_name}: {count}")
         
         print("=" * 70)
     
@@ -161,9 +161,9 @@ class EventAnalyzer:
         print(f"\nVotes:")
         for voter_id, target_id in meeting.votes.items():
             if target_id is not None:
-                print(f"  agent_{voter_id} -> agent_{target_id}")
+                print(f"agent_{voter_id} -> agent_{target_id}")
             else:
-                print(f"  agent_{voter_id} -> SKIP")
+                print(f"agent_{voter_id} -> SKIP")
         
         print(f"\nCommunication Timeline:")
         for i, comm in enumerate(meeting.comm_actions, 1):
@@ -245,7 +245,7 @@ class EventAnalyzer:
         action_types = Counter(a["action"].get("action_name") for a in impostor_actions)
         print(f"\nImpostor Action Distribution:")
         for action, count in action_types.most_common():
-            print(f"  {action:20s}: {count:6d}")
+            print(f"{action:20s}: {count:6d}")
         
 
         accuse_actions = [a for a in impostor_actions if  "ACCUSE" in a["action"].get("action_name",  "")]
@@ -259,7 +259,7 @@ class EventAnalyzer:
             )
             for role, count in accuse_targets.items():
                 role_name =  "SURVIVOR" if role == 0 else  "IMPOSTOR"
-                print(f"  {role_name}: {count}")
+                print(f"{role_name}: {count}")
         
         if support_actions:
             print(f"\nImpostor SUPPORT targets:")
@@ -269,7 +269,7 @@ class EventAnalyzer:
             )
             for role, count in support_targets.items():
                 role_name =  "SURVIVOR" if role == 0 else  "IMPOSTOR"
-                print(f"  {role_name}: {count}")
+                print(f"{role_name}: {count}")
         
         print("=" * 70)
 
@@ -306,12 +306,12 @@ def main():
         print(f"\nFound {len(candidates)} interesting meetings:")
         for cand in candidates[:10]:
             meeting = cand["meeting"]
-            print(f"\n  Meeting #{cand['index']}:")
-            print(f"    Duration: {meeting.duration} ticks")
-            print(f"    Comm actions: {meeting.num_comm_actions}")
-            print(f"    ACCUSE count: {cand['accuse_count']}")
-            print(f"    Max coordination: {cand['max_coordination']} ACCUSE on same target")
-            print(f"    Ejected: {'Yes' if meeting.has_ejection else  'No'}")
+            print(f"\nMeeting #{cand['index']}:")
+            print(f"Duration: {meeting.duration} ticks")
+            print(f"Comm actions: {meeting.num_comm_actions}")
+            print(f"ACCUSE count: {cand['accuse_count']}")
+            print(f"Max coordination: {cand['max_coordination']} ACCUSE on same target")
+            print(f"Ejected: {'Yes' if meeting.has_ejection else  'No'}")
     
     if args.impostor_strategies:
         analyzer.analyze_impostor_strategies()

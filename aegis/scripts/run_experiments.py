@@ -150,12 +150,12 @@ Examples:
             config_file = configs_dir / config_name
             experiment_name = config_file.stem.replace(".config", "")
             experiment_dir = Path("checkpoints") / experiment_name
-            print(f"python -m aegis.scripts.merge_events {experiment_dir}")
+            print(f"python -m aegis.analysis.merge_events {experiment_dir}")
         print("\nThen analyze the merged file:")
         for config_name in set(cn for cn, _, _ in results):
             config_file = configs_dir / config_name
             experiment_name = config_file.stem.replace(".config", "")
-            print(f"  python -m aegis.scripts.analyze_events checkpoints/{experiment_name}/events_all.jsonl --summary")
+            print(f"  python -m aegis.analysis.analyze_events checkpoints/{experiment_name}/events_all.jsonl --summary")
     
     return 0 if successful == total else 1
 
