@@ -9,6 +9,11 @@ A production-quality multi-agent reinforcement learning project implementing a c
 - **Partial Observability**: Configurable vision radius limits what agents can see
 - **Meeting/Voting**: Body reports trigger discussion and voting phases with confidence-based filtering
 
+## Resources
+
+- 📄 [Research Paper](https://drive.google.com/file/d/1xYKkFJ_mdL9Z7fnjBOm9tBaw4GyBeqyH/view?usp=sharing) - Full paper describing the methodology and results
+- 💾 [Pre-trained Checkpoints](https://drive.google.com/drive/folders/1tp2Q9C0M6Q_Mbt9wbMndBVBv9c3u-Yle?usp=sharing) - Download trained models for all experiments (E1-E4)
+
 ## Installation
 
 ```bash
@@ -98,7 +103,9 @@ aegis/
 
 ## Results
 
-Results are saved in:
+Pre-trained checkpoints for all experiments are available for download (see [Resources](#resources) above).
+
+When training locally, results are saved in:
 - `checkpoints/<experiment>/seed_<N>/` - Individual seed results
 - `checkpoints/<experiment>/events_all.jsonl` - Merged events (after running merge_events)
 - `results/all_metrics.json` - Aggregated metrics (after running aggregate_all_metrics)
